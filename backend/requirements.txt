@@ -3,3 +3,4 @@ uvicorn
 pydantic>=2
 httpx
 tzdata
+python-dotenv
