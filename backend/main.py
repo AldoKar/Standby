@@ -136,6 +136,15 @@ async def get_flight_status(flight: str):
     return status
 
 
+@app.post("/flights/status/show")
+async def show_flight_status(flight: str | None = None):
+    """'What's my flight status?' -> publishes flight.status so the HUD shows it.
+    No flight given: the tracked one, else the booked one."""
+    status = await get_flight_status(flight or tracking["flight"] or state["booking"]["flight"])
+    publish(make_event("flight.status", status))
+    return status
+
+
 # ponytail: one tracked flight for the whole app; per-user tracking when there are real users
 tracking = {"flight": None, "last": None, "task": None}
 
@@ -161,6 +170,7 @@ async def track(flight: str):
     """Start following a real flight (e.g. UA183 or UAL183). Changes are published to /events."""
     status = await get_flight_status(flight)
     tracking.update(flight=flight, last=status)
+    publish(make_event("flight.status", status))
     if not tracking["task"] or tracking["task"].done():
         tracking["task"] = asyncio.create_task(track_loop())
     return status

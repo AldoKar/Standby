@@ -42,6 +42,11 @@ export interface EventData {
   "boarding.soon": { flight: string; gate: string; minutes: number };
   "flight.cancelled": { flight: string; route: string };
   "flight.delayed": { flight: string; minutes: number; new_departure: string };
+  "flight.status": {
+    flight: string; route: string; status: string | null; cancelled: boolean;
+    gate: string | null; terminal: string | null; delay_min: number;
+    departure: string | null; arrival: string | null;
+  };
   "call.started": { provider: string };
   "call.completed": { confirmation: string; summary: string };
   "task.resolved": { new_flight: string; departure: string; arrival: string; gate: string };
