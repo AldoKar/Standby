@@ -1,69 +1,92 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
-import { hudText, IDLE_HUD, mockReply, type AgentReply } from './chat/mockAgent'
+import { eventToChat } from './chat/eventText'
 import { ChatPanel, type ChatMessage } from './components/ChatPanel'
 import { DebugLog } from './components/DebugLog'
 import { HudMirror } from './components/HudMirror'
 import { log } from './debug/logger'
-import {
-  emitInput,
-  initGlasses,
-  onGlassesInput,
-  renderToGlasses,
-  type BridgeStatus,
-  type GlassesInput,
-} from './glasses/bridge'
+import { DevPanel } from './dev/DevPanel'
+import type { EventType } from '@contracts/events'
+import { DESIGN_SHOTS, eventsForMessage, GLYPH_PROBE_LINES, SAMPLE_EVENTS } from './dev/sampleEvents'
+import { publish, subscribe } from './events/bus'
+import { emitInput, initGlasses, onGlassesInput, type BridgeStatus } from './glasses/bridge'
+import { performAction } from './hud/actions'
+import { currentScreen, showScreen, subscribeHud } from './hud/controller'
+import { planScreen } from './hud/layout'
+import { createScreenMapper, idleScreen, type HudScreen } from './hud/screens'
 
 const BUILD = `build ${__BUILD_ID__}`
-const INITIAL_HUD = hudText([...IDLE_HUD, BUILD])
 
+// DEV-only `?shot=<name>` paints one state on launch (for simulator screenshots). Stripped from prod builds.
+// Accepts a design screen (DESIGN_SHOTS), an event type (SAMPLE_EVENTS) or "glyphs".
+const SHOT = import.meta.env.DEV ? new URLSearchParams(location.search).get('shot') : null
+const INITIAL: HudScreen =
+  SHOT === 'glyphs'
+    ? { header: 'GLYPH PROBE', lines: GLYPH_PROBE_LINES.slice(0, 2), detail: GLYPH_PROBE_LINES[2] }
+    : idleScreen(BUILD)
+
+const toScreen = createScreenMapper()
+// Once at module load, not in an effect: StrictMode re-runs effects and would overwrite newer screens.
+showScreen(INITIAL)
 let nextMsgId = 1
+let shotPublished = false
 
 function App() {
   const [status, setStatus] = useState<BridgeStatus>('connecting')
-  const [hud, setHud] = useState(INITIAL_HUD)
+  const [screen, setScreen] = useState<HudScreen>(currentScreen)
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: nextMsgId++, role: 'agent', text: 'Hi, I am Handle It. Where do you want to go?' },
   ])
-  // What a tap on the glasses does right now. A ref so the gesture listener never reads stale state.
-  const pendingTap = useRef<AgentReply | undefined>(undefined)
 
-  const showReply = useCallback((reply: AgentReply) => {
-    setMessages((m) => [...m, { id: nextMsgId++, role: 'agent', text: reply.chat }])
-    const text = hudText(reply.hud)
-    setHud(text)
-    renderToGlasses(text)
-    pendingTap.current = reply.onTap
-  }, [])
-
+  // Glasses bridge + lens state.
   useEffect(() => {
     log(`Handle It ${BUILD}`)
-    initGlasses(INITIAL_HUD).then(setStatus)
+    initGlasses(planScreen(INITIAL)).then(setStatus)
+    return subscribeHud(setScreen)
   }, [])
 
+  // Every event feeds both columns: chat (long form) and lens (3-zone template).
   useEffect(
     () =>
-      onGlassesInput((input: GlassesInput) => {
-        if (input === 'tap') {
-          const next = pendingTap.current
-          if (next) {
-            setMessages((m) => [...m, { id: nextMsgId++, role: 'system', text: '👓 Tap on glasses' }])
-            showReply(next)
-          }
-        } else if (input === 'double_tap') {
-          // Double tap = no / back: clear the pending action and go idle.
-          pendingTap.current = undefined
-          const text = hudText(IDLE_HUD)
-          setHud(text)
-          renderToGlasses(text)
-        }
+      subscribe((e) => {
+        const line = eventToChat(e)
+        if (line) setMessages((m) => [...m, { id: nextMsgId++, ...line }])
+        const next = toScreen(e)
+        if (next) showScreen(next)
       }),
-    [showReply],
+    [],
+  )
+
+  // DEV-only `?shot=<name>` publishes that screen's events once on launch.
+  useEffect(() => {
+    if (shotPublished || !SHOT) return
+    shotPublished = true // StrictMode runs effects twice in dev
+    if (SHOT in DESIGN_SHOTS) DESIGN_SHOTS[SHOT]().forEach(publish)
+    else if (SHOT in SAMPLE_EVENTS) publish(SAMPLE_EVENTS[SHOT as EventType]())
+  }, [])
+
+  // Gestures act on whatever screen is showing right now.
+  useEffect(
+    () =>
+      onGlassesInput((input) => {
+        const s = currentScreen()
+        if (input === 'tap' && s.onTap) void performAction(s.onTap)
+        else if (input === 'long_press' && s.onReject) void performAction(s.onReject)
+        // double_tap = exit, handled by the bridge. Never repurpose it.
+      }),
+    [],
   )
 
   function handleSend(text: string) {
     setMessages((m) => [...m, { id: nextMsgId++, role: 'user', text }])
-    showReply(mockReply(text))
+    const events = eventsForMessage(text)
+    if (events.length === 0) {
+      setMessages((m) => [
+        ...m,
+        { id: nextMsgId++, role: 'agent', text: 'Try "book me a flight to SF", "gate", "boarding" or "cancel".' },
+      ])
+    }
+    events.forEach(publish)
   }
 
   return (
@@ -73,9 +96,10 @@ function App() {
         <span className="build">{BUILD}</span>
       </header>
       <div className="columns">
-        <HudMirror text={hud} status={status} onInput={emitInput} />
+        <HudMirror screen={screen} status={status} onInput={emitInput} />
         <ChatPanel messages={messages} onSend={handleSend} />
       </div>
+      {import.meta.env.DEV && <DevPanel />}
       <DebugLog />
     </main>
   )

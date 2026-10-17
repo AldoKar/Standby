@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import type { ChatRole } from '../chat/eventText'
 
-export type ChatMessage = { id: number; role: 'user' | 'agent' | 'system'; text: string }
+export type ChatMessage = { id: number; role: ChatRole; text: string }
 
 type Props = {
   messages: ChatMessage[]
