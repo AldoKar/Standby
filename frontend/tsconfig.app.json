@@ -16,11 +16,14 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Shared contract lives at the repo root (../contracts), owned by the whole team */
+    "paths": { "@contracts/*": ["../contracts/*"] },
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src", "../contracts/events.ts"]
 }
