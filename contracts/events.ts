@@ -41,6 +41,7 @@ export interface EventData {
   "gate.changed": { flight: string; old_gate: string; new_gate: string };
   "boarding.soon": { flight: string; gate: string; minutes: number };
   "flight.cancelled": { flight: string; route: string };
+  "flight.delayed": { flight: string; minutes: number; new_departure: string };
   "call.started": { provider: string };
   "call.completed": { confirmation: string; summary: string };
   "task.resolved": { new_flight: string; departure: string; arrival: string; gate: string };

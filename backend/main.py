@@ -14,9 +14,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from contracts.events import (AcceptAlertBody, AgentTask, ApprovalBody, Envelope, FlightCancelled,
                               Option, PayBody, PayResult, SearchResult, make_event)
 
+import flight_status
 import guardrails
 
 AGENT_URL = os.getenv("AGENT_URL")  # Handle It Agent REST endpoint; unset = agent not wired yet
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "120"))  # each AeroAPI call costs credit; don't go lower
 USER_ID = "demo_user"
 
 app = FastAPI(title="Handle It backend")
@@ -121,6 +123,60 @@ async def accept_alert(body: AcceptAlertBody, background: BackgroundTasks):
                      user_id=USER_ID, input={"booking": state["booking"]})
     background.add_task(send_to_agent, task)
     return {"task_id": task.task_id}
+
+
+@app.get("/flights/status")
+async def get_flight_status(flight: str):
+    try:
+        status = await flight_status.fetch_status(flight)
+    except (RuntimeError, httpx.HTTPError) as e:
+        raise HTTPException(502, f"flight status unavailable: {e}")
+    if not status:
+        raise HTTPException(404, f"no flight found for {flight}")
+    return status
+
+
+# ponytail: one tracked flight for the whole app; per-user tracking when there are real users
+tracking = {"flight": None, "last": None, "task": None}
+
+
+async def track_loop():
+    while tracking["flight"]:
+        try:
+            new = await flight_status.fetch_status(tracking["flight"])
+        except Exception as e:  # network/API hiccup: keep tracking, try again next round
+            print(f"[track] {tracking['flight']}: {e}")
+            new = None
+        if new:
+            for kind, data in flight_status.diff(tracking["last"], new):
+                publish(make_event(kind, data))
+            tracking["last"] = new
+            if new["cancelled"] or (new["status"] or "").startswith("Arrived"):
+                break  # nothing more to watch; saves API credit
+        await asyncio.sleep(POLL_SECONDS)
+
+
+@app.post("/track")
+async def track(flight: str):
+    """Start following a real flight (e.g. UA183 or UAL183). Changes are published to /events."""
+    status = await get_flight_status(flight)
+    tracking.update(flight=flight, last=status)
+    if not tracking["task"] or tracking["task"].done():
+        tracking["task"] = asyncio.create_task(track_loop())
+    return status
+
+
+@app.delete("/track")
+def untrack():
+    tracking.update(flight=None, last=None)
+    return {"ok": True}
+
+
+@app.post("/simulate/flight")
+def simulate_flight(changes: dict):
+    """Fake mode only (no AEROAPI_KEY): e.g. {"gate": "61"}, {"delay_min": 30, "departure": "18:40"}, {"cancelled": true}."""
+    flight_status.FAKE.update({k: v for k, v in changes.items() if k in flight_status.FAKE})
+    return flight_status.FAKE
 
 
 @app.post("/simulate/cancel")

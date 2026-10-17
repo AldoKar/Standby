@@ -25,7 +25,24 @@ def test_cancel_removes_flight_from_search():
     assert "UA183" not in flights() and "UA927" in flights()
 
 
+def test_flight_status_diff():
+    from flight_status import diff, normalize
+    raw = {"ident_iata": "UA183", "origin": {"code_iata": "LAX", "timezone": "America/Los_Angeles"},
+           "destination": {"code_iata": "SFO", "timezone": "America/Los_Angeles"},
+           "status": "Scheduled", "cancelled": False, "gate_origin": "52", "departure_delay": 0,
+           "scheduled_out": "2026-10-19T01:10:00Z", "scheduled_in": "2026-10-19T02:35:00Z"}
+    old = normalize(raw)
+    assert old["departure"] == "18:10" and old["route"] == "LAX-SFO"
+    assert diff(None, old) == []
+    new = normalize({**raw, "gate_origin": "61", "departure_delay": 1800, "estimated_out": "2026-10-19T01:40:00Z"})
+    kinds = {k: d for k, d in diff(old, new)}
+    assert kinds["gate.changed"] == {"flight": "UA183", "old_gate": "52", "new_gate": "61"}
+    assert kinds["flight.delayed"] == {"flight": "UA183", "minutes": 30, "new_departure": "18:40"}
+    assert [k for k, _ in diff(old, normalize({**raw, "cancelled": True}))] == ["flight.cancelled"]
+
+
 if __name__ == "__main__":
     test_payment_guardrails()
     test_cancel_removes_flight_from_search()
+    test_flight_status_diff()
     print("backend ok")
