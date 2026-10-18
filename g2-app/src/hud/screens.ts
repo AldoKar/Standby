@@ -33,6 +33,8 @@ export type HudScreen = {
   center?: boolean
   // Set on the local push-to-talk screens; `of` is the engine screen to go back to.
   ask?: { of: HudScreen; phase: AskPhase }
+  // Minimized call (hud/callView.ts): only a small phone icon in the corner; `of` is the call screen.
+  mini?: { of: HudScreen }
 }
 
 export type AskPhase = 'listening' | 'thinking' | 'failed'
@@ -57,7 +59,9 @@ const STYLES: Record<string, Style> = {
   booking_offer: { header: 'STANDBY · NEEDS YOUR OK', icon: 'plane' },
   only_option: { header: 'STANDBY · NEEDS YOUR OK', icon: 'plane' },
   booked: { header: 'STANDBY · BOOKED', icon: 'check' },
-  calling: { header: 'STANDBY IS CALLING', icon: 'phone', bar: { kind: 'wave' } },
+  // Long press minimizes the call to a corner icon (hud/callView.ts); the header says so.
+  calling: { header: 'STANDBY IS CALLING · HOLD TO HIDE', icon: 'phone', bar: { kind: 'wave' } },
+  call_resumed: { header: 'STANDBY IS CALLING · HOLD TO HIDE', icon: 'phone' },
   fee_request: { header: 'STANDBY · NEEDS YOUR OK', icon: 'alert', alert: true },
   denied: { header: 'STANDBY · BLOCKED', icon: 'alert', alert: true },
   no_option: { header: 'STANDBY', icon: 'alert', alert: true },
@@ -210,6 +214,7 @@ export function gestureFailedScreen(): HudScreen {
 
 /** Plain-text summary for logs and screen readers. */
 export function screenSummary(s: HudScreen): string {
+  if (s.mini) return 'Call minimized (phone icon in the corner). Long press to show it.'
   const choices = s.choices?.map((c) => `${c.label} (${c.gesture})`) ?? [s.footer]
   return [s.header, ...s.lines, s.detail, ...choices].filter(Boolean).join(', ') || 'blank'
 }

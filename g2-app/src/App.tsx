@@ -13,6 +13,7 @@ import type { EngineEvent, Gesture } from './engine/types'
 import { publish, subscribe } from './events/bus'
 import { emitInput, initGlasses, onGlassesInput, type BridgeStatus, type GlassesInput } from './glasses/bridge'
 import { currentPagePlan, currentScreen, showScreen, subscribeHud } from './hud/controller'
+import { presentEngineScreen } from './hud/callView'
 import { handleGesture } from './hud/gestures'
 import { planScreen } from './hud/layout'
 import { fromEngine, idleScreen, offlineScreen, type HudScreen } from './hud/screens'
@@ -122,7 +123,7 @@ function App() {
         if (e.type === 'demo.reset') setMessages([welcome()])
         const line = eventToChat(e)
         if (line) setMessages((m) => [...m, { id: nextMsgId++, ...line }])
-        if (e.type === 'hud.screen') showScreen(fromEngine(e.data), e.data.clear_after_s)
+        if (e.type === 'hud.screen') presentEngineScreen(fromEngine(e.data), e.data.clear_after_s)
       }),
     [],
   )
