@@ -220,6 +220,66 @@ async def test_guardrails() -> None:
     ok("a relay with a stale task adopts the one in flight, so its approve reaches the pending spend")
 
 
+# ---------- the Payment Protocol handshake, narrated ----------
+
+async def test_handshake_narration() -> None:
+    """A hire's protocol steps reach the traveller's chat as they happen, written by code,
+    and Claude is told they were shown. Drives the buyer-side handlers directly."""
+    from uagents_core.contrib.protocols.payment import (CompletePayment, Funds, RejectPayment,
+                                                        RequestPayment)
+    section("Payment Protocol handshake, narrated in the chat")
+    saved = orch.CALLER_ADDRESS
+    orch.CALLER_ADDRESS = caller = "agent1qcaller"
+    ask = lambda amount: RequestPayment(  # noqa: E731
+        accepted_funds=[Funds(amount=amount, currency="USD", payment_method="fet_direct")],
+        recipient=caller, deadline_seconds=120, reference="job-1", description="one call")
+
+    def chat(ctx: Ctx) -> list[str]:
+        return ["".join(c.text for c in m.content if hasattr(c, "text")).strip("`")
+                for to, m in ctx.sent if to == "traveller"]
+
+    async def until(cond):
+        for _ in range(100):
+            if cond():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("handler never ran")
+
+    try:
+        ctx = Ctx()
+        s = {"task_id": None, "approval_id": None, "history": [], "reply_to": "traveller"}
+        hire = asyncio.create_task(orch.run_tool(ctx, s, "hire_caller", {"purpose": "hold the room"}))
+        await until(lambda: orch.open_job())
+        await orch.on_payment_request(ctx, caller, ask("1.99"))
+        tx = next(m.transaction_id for to, m in ctx.sent if type(m).__name__ == "CommitPayment")
+        await orch.on_payment_complete(ctx, caller, CompletePayment(transaction_id=tx))
+        await orch.handle_message(ctx, caller, orch.ChatMessage(
+            timestamp=orch.datetime.now(orch.timezone.utc), msg_id=orch.uuid4(),
+            content=[orch.TextContent(type="text", text="Held.\n" + json.dumps(
+                {"held": True, "door_code": "4417", "verified": True, "fee_usd": 40,
+                 "attempts": 1, "mode": "mock"}))]))
+        res = await hire
+        lines = chat(ctx)
+        assert [l.split(" · ")[0] for l in lines] == [
+            "→ @standby-caller", "← RequestPayment", "→ CommitPayment",
+            "← CompletePayment", "← outcome"], lines
+        assert f"tx {tx}" in lines[2] and "$2.00/call cap" in lines[2], lines[2]
+        assert "door code 4417" in lines[4] and "simulated call" in lines[4], lines[4]
+        assert res["traveller_already_saw"] == lines and res["fee_paid"] == "1.99 USD", res
+        ok("job → RequestPayment → CommitPayment → CompletePayment → outcome, one line each, in order")
+
+        ctx = Ctx()
+        hire = asyncio.create_task(orch.run_tool(ctx, s, "hire_caller", {"purpose": "hold the room"}))
+        await until(lambda: orch.open_job())
+        await orch.on_payment_request(ctx, caller, ask("9.99"))
+        res = await asyncio.wait_for(hire, 1)  # not the 45s timeout
+        assert any(isinstance(m, RejectPayment) for _, m in ctx.sent)
+        assert chat(ctx)[-1].startswith("→ RejectPayment") and "not hired" in res["outcome"]["error"], res
+        ok("a price over the cap is rejected, shown, and ends the hire at once")
+    finally:
+        orch.CALLER_ADDRESS = saved
+
+
 # ---------- interactive cards ----------
 
 REQUIRED = {"card_protocol_version", "requires_card_interaction", "card_kind", "card_payload"}
@@ -328,6 +388,7 @@ async def main() -> None:
     await test_ask_live(live)
     resolved = await test_tools()
     await test_guardrails()
+    await test_handshake_narration()
     await test_cards(resolved)
     test_selection_parsing()
     if live:

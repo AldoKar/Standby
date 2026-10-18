@@ -106,6 +106,10 @@ it is live when it came from FlightAware. A question never starts or changes a b
 
 How to reply:
 - At most 5 short lines. No preamble, no markdown headings, no emoji.
+- After hire_caller, the traveller has already watched every Agent Payment Protocol step \
+arrive as its own message (the result lists them under traveller_already_saw). Never \
+repeat or paraphrase those lines; say what was agreed on the call and the one fee \
+sentence. That turn may run to 6 lines.
 - Lead with what happened. Give the number and the reason, not adjectives.
 - When a spend needs the traveller's OK, state the amount, what is left of the budget \
 afterwards and the fee allowance, then ask them to reply "REPLY_WITH".
@@ -281,7 +285,50 @@ CALLER_ADDRESS = os.getenv("CALLER_ADDRESS", "").strip()
 CALLER_MAX_USD = float(os.getenv("CALLER_MAX_USD", "2.00"))
 CALL_RESULT_TIMEOUT_S = 45  # a chat turn cannot hang; fail visibly instead
 
+CALLER_HANDLE = "@standby-caller"
+
 jobs: dict[str, dict] = {}  # reference -> {"event": asyncio.Event, "outcome": dict | None}
+
+
+# ---------- narrating the hire into the chat ----------
+# The handshake with the Caller happens between two Agentverse mailboxes, so the traveller
+# (and a judge) would otherwise see none of it. Each step is written here, from code, as
+# it happens: it can't be hallucinated, it doesn't eat Claude's reply budget, and it can
+# be diffed line for line against the Caller's own log.
+
+def open_job() -> dict | None:
+    """The hire still waiting on its outcome. One call runs at a time, so the first."""
+    return next((j for j in jobs.values() if not j["event"].is_set()), None)
+
+
+async def wire(ctx: Context, job: dict | None, line: str) -> None:
+    if job is None:
+        return
+    job["wire"].append(line)
+    if job.get("traveller"):
+        try:
+            await say(ctx, job["traveller"], f"`{line}`")
+        except Exception:  # narration must never break the hire it narrates
+            ctx.logger.exception("could not narrate a protocol step")
+
+
+def outcome_line(o: dict) -> str:
+    if o.get("error"):
+        return f"← outcome · {o['error']}"
+    bits = ["room held" if o.get("held") else "nothing held"]
+    if o.get("held") and o.get("door_code") and o.get("verified"):
+        bits.append(f"door code {o['door_code']}")
+    if o.get("fee_usd"):
+        bits.append(f"{money(o['fee_usd'])} late check-in fee")
+    if o.get("voicemail"):
+        bits.append("voicemail")
+    if (o.get("attempts") or 1) > 1:
+        bits.append(f"{o['attempts']} attempts")
+    mode = {"mock": "simulated call", "engine": "live call"}.get(o.get("mode"))
+    if mode:
+        bits.append(mode)
+    return "← outcome · " + " · ".join(bits)
+
 
 AGENT_SEED = os.getenv("AGENT_SEED")
 if not AGENT_SEED:
@@ -649,25 +696,32 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
                     "say_nothing_about_this": "The traveller already knows a call is "
                                               "underway. Do not mention this tool at all."}
         reference = f"call-{uuid4().hex[:8]}"
-        jobs[reference] = {"event": asyncio.Event(), "outcome": None, "fee": None}
         job = {"task_id": state.get("task_id"), "purpose": args.get("purpose", "hold the room"),
                "to": args.get("to") or "Hayes St Guesthouse", "reference": reference}
+        jobs[reference] = {"event": asyncio.Event(), "outcome": None, "fee": None, "tx": None,
+                           "dialing": False, "to": job["to"], "wire": [],
+                           "traveller": state.get("reply_to")}
         state["job_reference"] = reference
         await ctx.send(CALLER_ADDRESS, ChatMessage(
             timestamp=datetime.now(timezone.utc), msg_id=uuid4(),
             content=[TextContent(type="text", text=json.dumps(job))]))
+        await wire(ctx, jobs[reference],
+                   f"→ {CALLER_HANDLE} · job: {job['purpose']}, {job['to']} (ref {reference})")
         try:
             await asyncio.wait_for(jobs[reference]["event"].wait(), CALL_RESULT_TIMEOUT_S)
             outcome = jobs[reference]["outcome"]
         except asyncio.TimeoutError:
             outcome = {"error": "the Caller did not report back in time"}
+            await wire(ctx, jobs[reference],
+                       f"✕ no outcome from {CALLER_HANDLE} after {CALL_RESULT_TIMEOUT_S}s")
         fee = jobs.get(reference, {}).get("fee")
-        jobs.pop(reference, None)
+        shown = jobs.pop(reference, {}).get("wire", [])
         return {
             "hired": "standby-caller",
             "fee_paid": fee or "nothing — the call was never paid for",
             "who_paid": "Standby, from its own budget, not the traveller's",
             "outcome": outcome,
+            "traveller_already_saw": shown,
         }
 
     if name == "save_to_vault":
@@ -863,24 +917,32 @@ async def on_payment_request(ctx: Context, sender: str, msg: RequestPayment):
         await ctx.send(sender, RejectPayment(reason="Standby only pays its own Caller agent"))
         return
     affordable = [f for f in msg.accepted_funds if float(f.amount) <= CALLER_MAX_USD]
+    job = open_job()
+    asked = ", ".join(f"{f.amount} {f.currency} · {f.payment_method}" for f in msg.accepted_funds)
+    await wire(ctx, job, f"← RequestPayment · {asked}")
     if not affordable:
-        asked = ", ".join(f"{f.amount} {f.currency}" for f in msg.accepted_funds)
         ctx.logger.info(f"declining {asked}: over the ${CALLER_MAX_USD:.2f} cap")
         await ctx.send(sender, RejectPayment(reason=f"over Standby's ${CALLER_MAX_USD:.2f} per-call cap"))
+        await wire(ctx, job, f"→ RejectPayment · over my ${CALLER_MAX_USD:.2f}/call cap · no call")
+        if job is not None:  # the Caller won't dial unpaid; don't sit out the timeout
+            job["outcome"] = {"error": f"not hired: the Caller asked {asked}, over the "
+                                       f"${CALLER_MAX_USD:.2f} per-call cap"}
+            job["event"].set()
         return
 
     funds = affordable[0]
     transaction_id = f"sbx-{uuid4().hex[:12]}"  # simulated settlement; no FET moves
     ctx.logger.info(f"paying {funds.amount} {funds.currency} via {funds.payment_method} "
                     f"for {msg.reference}")
-    for job in jobs.values():
-        if not job["event"].is_set() and job.get("fee") is None:
-            job["fee"] = f"{funds.amount} {funds.currency}"
-            break
+    if job is not None and job.get("fee") is None:
+        job["fee"] = f"{funds.amount} {funds.currency}"
+        job["tx"] = transaction_id
     await ctx.send(sender, CommitPayment(
         funds=funds, recipient=msg.recipient, transaction_id=transaction_id,
         reference=msg.reference, description=msg.description,
     ))
+    await wire(ctx, job, f"→ CommitPayment · tx {transaction_id} · within my "
+                         f"${CALLER_MAX_USD:.2f}/call cap · sandbox settlement, no FET moved")
     try:  # show it on the dashboard without touching the traveller's ledger
         await http.post("/events", json={"type": "agent.hired", "data": {
             "agent": "standby-caller", "amount_usd": float(funds.amount),
@@ -893,6 +955,11 @@ async def on_payment_request(ctx: Context, sender: str, msg: RequestPayment):
 @pay_proto.on_message(CompletePayment)
 async def on_payment_complete(ctx: Context, sender: str, msg: CompletePayment):
     ctx.logger.info(f"Caller confirmed payment {msg.transaction_id}; call is on")
+    job = next((j for j in jobs.values() if j.get("tx") == msg.transaction_id), None)
+    if job is not None:
+        job["dialing"] = True
+    await wire(ctx, job, f"← CompletePayment · tx {msg.transaction_id} · dialing "
+                         f"{job['to'] if job else 'now'}")
 
 
 @pay_proto.on_message(CancelPayment)
@@ -900,6 +967,7 @@ async def on_payment_cancel(ctx: Context, sender: str, msg: CancelPayment):
     ctx.logger.info(f"Caller cancelled {msg.transaction_id}: {msg.reason}")
     for job in jobs.values():
         if not job["event"].is_set():
+            await wire(ctx, job, f"← CancelPayment · tx {msg.transaction_id} · {msg.reason}")
             job["outcome"] = {"error": f"the Caller cancelled: {msg.reason}"}
             job["event"].set()
 
@@ -926,14 +994,19 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
                 break
             except (ValueError, TypeError):
                 continue
-        ctx.logger.info(f"Caller: {text.splitlines()[0][:80] if text else ''}")
+        first = text.splitlines()[0][:120] if text else ""
+        ctx.logger.info(f"Caller: {first[:80]}")
+        job = open_job()
         if outcome is None:
-            return  # an interim update ("I'll call them now"), not the result — keep waiting
-        for job in jobs.values():
-            if not job["event"].is_set():
-                job["outcome"] = outcome
-                job["event"].set()
-                break
+            # An interim update, not the result — keep waiting. Before payment it only
+            # restates the job and the price, which the protocol lines already show.
+            if job is not None and job["dialing"] and first:
+                await wire(ctx, job, f"← {CALLER_HANDLE} · {first}")
+            return
+        if job is not None:
+            await wire(ctx, job, outcome_line(outcome))
+            job["outcome"] = outcome
+            job["event"].set()
         return
 
     if ending:
@@ -946,6 +1019,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
 
     ctx.logger.info(f"turn from {sender[:20]}…: {text[:60]}")
     state = await ensure_fresh(ctx, load(ctx, sender))
+    state["reply_to"] = sender  # a hire mid-turn narrates its protocol steps here
     text = as_instruction(text, state)  # a card tap arrives as JSON; treat it as if typed
     state["history"].append({"role": "user", "content": text})
     messages = list(state["history"])
