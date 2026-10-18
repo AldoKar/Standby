@@ -40,14 +40,19 @@ def text(msg: str) -> ChatMessage:
                        content=[TextContent(type="text", text=msg)])
 
 
+def clock(t: str) -> str:
+    h, m = (int(x) for x in t.split(":"))
+    return f"{h % 12 or 12}:{m:02d} {'PM' if h >= 12 else 'AM'}"
+
+
 def options_message(task: dict) -> str:
     # TODO(P2): send this as an Interactive Card (carousel + review card) once the format is confirmed.
     lines = ["I checked the flights that still get you to SF tonight:"]
     for o in task["options"]:
         mark = "✓" if o["verdict"] == "pick" else "✗"
-        lines.append(f"{mark} {o['airline']} {o['flight']}, {o['departs']}, ${o['price_usd']}: {o['reason']}")
+        lines.append(f"{mark} {o['airline']} {o['flight']}, {clock(o['departs'])}, ${o['price_usd']}: {o['reason']}")
     p = task["pick"]
-    lines.append(f"\nReply \"book\" to book {p['airline']} {p['departs']} for ${p['price_usd']} "
+    lines.append(f"\nReply \"book\" to book {p['airline']} {clock(p['departs'])} for ${p['price_usd']} "
                  f"(extra fees OK up to ${FEE_ALLOWANCE_USD}).")
     return "\n".join(lines)
 
@@ -58,8 +63,8 @@ def outcome_message(state: dict) -> str:
         head = f"Done. Room held at the guesthouse, door code {o['door_code']}, ask for {o.get('contact')}."
     else:
         head = "The flight is booked, but the guesthouse couldn't hold the room."
-    return (f"{head}\nSpent ${ledger['spent_usd']} of ${ledger['mandate']['budget_usd']}; "
-            f"United refund ${ledger['refunds_pending_usd']} pending; net ${ledger['net_cost_usd']}.")
+    return (f"{head}\nSpent ${ledger['spent_usd']:g} of ${ledger['mandate']['budget_usd']:g}; "
+            f"United refund ${ledger['refunds_pending_usd']:g} pending; net ${ledger['net_cost_usd']:g}.")
 
 
 async def wait_for_outcome(api: httpx.AsyncClient, task_id: str, timeout_s: int = 150) -> dict:
