@@ -514,6 +514,17 @@ async def snapshot(state: dict) -> dict:
 async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
     """Every tool is an HTTP call to the engine. Returns a dict for the tool_result."""
     if name == "get_booking":
+        # The engine keeps the ledger across tasks, and POST /tasks only auto-resets a
+        # task that is still mid-flight — not one that already resolved. Without this, a
+        # second run in a row starts with whatever is left of the budget ($45 after a
+        # full run) and every option is correctly, uselessly, rejected. A fresh trip
+        # starts fresh.
+        try:
+            if (await http.get("/state")).json().get("stage") == "resolved":
+                ctx.logger.info("previous task was finished — resetting the engine first")
+                await http.post("/demo/reset")
+        except (httpx.HTTPError, ValueError):
+            pass
         r = await http.post("/tasks", json={"source": "asi1"})
         r.raise_for_status()
         d = r.json()

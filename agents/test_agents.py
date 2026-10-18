@@ -140,6 +140,18 @@ async def test_guardrails() -> None:
         orch.CALLER_ADDRESS = saved_addr
     ok("the Caller is not hired, or paid, while the engine already has a call in flight")
 
+    # running the demo twice without a manual reset must still work
+    s4 = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s4, "get_booking", {})
+    await orch.run_tool(Ctx(), s4, "pay", {"approved": True, "fee_allowance_usd": 50})
+    assert (await orch.wait_for_outcome(Ctx(), s4))["stage"] == "resolved"
+    again = await orch.run_tool(Ctx(), {"task_id": None, "approval_id": None, "history": []},
+                                "get_booking", {})
+    picked = [o for o in again["options"] if o["verdict"] == "pick"]
+    assert picked and picked[0]["id"] == "opt-delta", (
+        f"a second run must start on a full budget, got {[(o['id'], o['verdict']) for o in again['options']]}")
+    ok("a second run back-to-back starts on a full budget instead of a spent one")
+
     # a reset while a turn is in flight must not throw
     s3 = {"task_id": None, "approval_id": None, "history": []}
     await orch.run_tool(Ctx(), s3, "get_booking", {})
