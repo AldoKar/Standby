@@ -11,6 +11,8 @@ import {
   ImageContainerProperty,
   ImageRawDataUpdate,
   ImageRawDataUpdateResult,
+  ListContainerProperty,
+  ListItemContainerProperty,
   OsEventTypeList,
   RebuildPageContainer,
   StartUpPageCreateResult,
@@ -25,12 +27,21 @@ import { imageGray } from '../hud/images'
 import { PADDING, type PagePlan } from '../hud/layout'
 
 export type BridgeStatus = 'connecting' | 'connected' | 'browser' | 'error'
-export type GlassesInput = 'tap' | 'double_tap' | 'long_press' | 'scroll_up' | 'scroll_down'
+// list_select: the native list's selection moved (read it with listSelection()).
+export type GlassesInput = 'tap' | 'double_tap' | 'long_press' | 'scroll_up' | 'scroll_down' | 'list_select'
 
-// Team decision: double tap does nothing in the app (it must never close Standby mid-demo).
-// ⚠ Even's review expects double tap to exit via shutDownPageContainer(1) (see SKILLEVEN.md); the system may
-// also show its own exit dialog on the root page regardless. Flip to `true` before submitting if Even asks.
-const DOUBLE_TAP_EXITS = false
+// Row selected in the native list on the lens. The firmware owns it: it moves on swipe and is reported in
+// every list event. A (re)built list starts on row 0. null = no native list on the lens.
+let nativeListIndex: number | null = null
+
+/** The native list's selected row, or null when the lens shows no list (browser mode, other screens). */
+export function listSelection(): number | null {
+  return nativeListIndex
+}
+
+// Even's review expects double tap to exit via shutDownPageContainer(1) (see SKILLEVEN.md); on for the Beta.
+// Set to `false` for a demo where a stray double tap must never close Standby.
+const DOUBLE_TAP_EXITS = true
 
 const BRIDGE_TIMEOUT_MS = 2500
 const CALL_TIMEOUT_MS = 4000
@@ -157,7 +168,7 @@ export function onGlassesInput(fn: (input: GlassesInput) => void): () => void {
 
 function pageModel(plan: PagePlan) {
   return {
-    containerTotalNum: plan.texts.length + plan.images.length,
+    containerTotalNum: plan.texts.length + plan.images.length + (plan.lists?.length ?? 0),
     textObject: plan.texts.map(
       (t) =>
         new TextContainerProperty({
@@ -175,6 +186,29 @@ function pageModel(plan: PagePlan) {
           textColor: t.color,
           isEventCapture: t.capture ? 1 : 0,
           zOrderIndex: t.z,
+        }),
+    ),
+    listObject: (plan.lists ?? []).map(
+      (l) =>
+        new ListContainerProperty({
+          xPosition: l.x,
+          yPosition: l.y,
+          width: l.w,
+          height: l.h,
+          paddingLength: l.padding ?? PADDING,
+          borderWidth: l.border ? 2 : 0,
+          borderColor: l.border ? (l.borderLevel ?? BORDER_COLOR) : 0,
+          borderRadius: l.border ? (l.radius ?? 10) : 0,
+          containerID: l.id,
+          containerName: l.name,
+          isEventCapture: l.capture ? 1 : 0,
+          zOrderIndex: l.z,
+          itemContainer: new ListItemContainerProperty({
+            itemCount: l.items.length,
+            itemWidth: l.w - 2 * (l.padding ?? PADDING),
+            isItemSelectBorderEn: 1, // the glasses draw the box around the selected item
+            itemName: l.items,
+          }),
         }),
     ),
     imageObject: plan.images.map(
@@ -203,17 +237,20 @@ const MAX_CONTAINERS = 12
 /** What's wrong with a page for the real glasses (empty = fine). */
 export function planProblems(plan: PagePlan): string[] {
   const out: string[] = []
-  const total = plan.texts.length + plan.images.length
+  const lists = plan.lists ?? []
+  const total = plan.texts.length + plan.images.length + lists.length
   if (total < 1 || total > MAX_CONTAINERS) out.push(`${total} containers (1–${MAX_CONTAINERS})`)
   if (plan.texts.length > MAX_TEXTS) out.push(`${plan.texts.length} text containers (max ${MAX_TEXTS})`)
   if (plan.images.length > MAX_IMAGES) out.push(`${plan.images.length} image containers (max ${MAX_IMAGES})`)
-  if (plan.texts.filter((t) => t.capture).length !== 1) out.push('exactly one text container must capture events')
+  const captures = [...plan.texts, ...lists].filter((c) => c.capture).length
+  if (captures !== 1) out.push(`exactly one container must capture events (${captures})`)
+  for (const l of lists) if (!l.items.length || l.items.some((i) => !i.trim())) out.push(`list ${l.name} has empty items`)
   for (const i of plan.images) {
     if (i.w < IMAGE_W[0] || i.w > IMAGE_W[1] || i.h < IMAGE_H[0] || i.h > IMAGE_H[1]) {
       out.push(`image ${i.name} ${i.w}×${i.h} (w ${IMAGE_W.join('–')}, h ${IMAGE_H.join('–')})`)
     }
   }
-  const zs = [...plan.texts, ...plan.images].map((c) => c.z)
+  const zs = [...plan.texts, ...plan.images, ...lists].map((c) => c.z)
   if (new Set(zs).size !== zs.length) out.push('z orders must be unique')
   return out
 }
@@ -227,6 +264,10 @@ function textKey(content: string, color: number) {
 }
 
 function markBuilt(plan: PagePlan) {
+  // A freshly built list starts on its first row; tell the app so the engine follows (list_select).
+  const hadList = nativeListIndex !== null
+  nativeListIndex = plan.lists?.length ? 0 : null
+  if (nativeListIndex !== null || hadList) setTimeout(() => emitInput('list_select'), 0)
   applied = {
     signature: plan.signature,
     texts: new Map(plan.texts.map((t) => [t.id, textKey(t.content, t.color)])),
@@ -373,6 +414,19 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
         log('foreground exit → mic off')
         void setMic(false)
         return
+      }
+      // Native list: every event carries the selected row (index 0 may arrive as undefined: protobuf omits 0).
+      // A swipe inside the list only moves the selection; it is never a swipe gesture for the engine.
+      if (event.listEvent && nativeListIndex !== null) {
+        const l = event.listEvent
+        const index = l.currentSelectItemIndex ?? 0
+        if (index !== nativeListIndex) {
+          nativeListIndex = index
+          log(`list: row ${index}${l.currentSelectItemName ? ` (${l.currentSelectItemName})` : ''}`)
+          emitInput('list_select')
+        }
+        const type = l.eventType ?? OsEventTypeList.CLICK_EVENT
+        if (type === OsEventTypeList.SCROLL_TOP_EVENT || type === OsEventTypeList.SCROLL_BOTTOM_EVENT) return
       }
       const input = toInput(event)
       if (!input) return

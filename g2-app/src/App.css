@@ -363,6 +363,18 @@
   border-radius: calc(100cqw * 10 / 576);
 }
 
+.lens-list-item {
+  padding: calc(100cqw * 4 / 576) calc(100cqw * 8 / 576);
+  border: calc(100cqw * 2 / 576) solid transparent;
+  border-radius: calc(100cqw * 6 / 576);
+  opacity: 0.6;
+}
+
+.lens-list-item.selected {
+  border-color: var(--lens-green);
+  opacity: 1;
+}
+
 .lens-img {
   position: absolute;
   image-rendering: pixelated;

@@ -1,0 +1,25 @@
+{
+  "package_id": "com.standby.g2",
+  "edition": "202601",
+  "name": "Standby",
+  "version": "0.1.0",
+  "min_app_version": "2.2.10",
+  "min_sdk_version": "0.0.16",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Standby connects to its engine to show live trip updates on the glasses and to send your taps and voice replies.",
+      "whitelist": [
+        "https://149.28.76.19.sslip.io"
+      ]
+    },
+    {
+      "name": "g2-microphone",
+      "desc": "Standby listens through the glasses microphone only while you answer a question or ask one by voice."
+    }
+  ],
+  "supported_languages": [
+    "en"
+  ]
+}

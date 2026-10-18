@@ -116,6 +116,135 @@ function drawBar(ctx: CanvasRenderingContext2D, kind: string, arg: string | unde
   }
 }
 
+// Destination photo for the flight list, already converted for the lens (public/golden-gate-g2.png:
+// grayscale, black sky = unlit, 16 levels). Loaded once at startup; until it's ready (or if it fails) the
+// line-art bridge is used. Separate keys so the cache never keeps the fallback once the photo is there.
+const photo = { img: new Image(), ready: false }
+const photoListeners = new Set<() => void>()
+photo.img.onload = () => {
+  photo.ready = true
+  photoListeners.forEach((fn) => fn())
+}
+
+/** Runs once the destination photo has loaded (the controller re-renders a screen already showing it). */
+export function onDestinationArtReady(fn: () => void): void {
+  if (photo.ready) fn()
+  else photoListeners.add(fn)
+}
+photo.img.src = `${import.meta.env.BASE_URL}golden-gate-g2.png`
+
+/** Image key for the destination art: the photo once loaded, else the drawn bridge. */
+export function destinationArtKey(): string {
+  return photo.ready ? 'art:goldengate-photo' : 'art:goldengate'
+}
+
+// Centred text as pixels ("text:<px>:<gray>:<uri text>", see textImageKey in layout.ts). A clean sans close to
+// the G2's own font; shrinks to fit so a longer title never gets cut.
+const TEXT_FONT = '"Segoe UI", "Helvetica Neue", Roboto, Arial, sans-serif'
+
+function drawText(ctx: CanvasRenderingContext2D, key: string, w: number, h: number) {
+  const [, pxS, grayS, ...rest] = key.split(':')
+  const text = decodeURIComponent(rest.join(':'))
+  if (!text.trim()) return
+  let px = Number(pxS) || 22
+  ctx.font = `${px}px ${TEXT_FONT}`
+  while (px > 10 && ctx.measureText(text).width > w - 8) {
+    px -= 1
+    ctx.font = `${px}px ${TEXT_FONT}`
+  }
+  ctx.fillStyle = gray(Number(grayS) || BRIGHT)
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(text, w / 2, h / 2)
+}
+
+// Golden Gate in thin line art (the trip's destination, SFO), for the flight list's right column.
+// Mid brightness and strokes only: on a see-through lens a filled shape would cover the world behind it.
+function drawGoldenGate(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const deckY = Math.round(h * 0.7)
+  const towerTop = Math.round(h * 0.12)
+  const waterY = h - 10
+  const left = Math.round(w * 0.27)
+  const right = Math.round(w * 0.73)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  // Main span cable: a quadratic from tower top to tower top, sagging to just above the deck.
+  const sag = deckY - 6
+  const ctrlY = 2 * sag - towerTop // so the curve's lowest point is `sag`
+  const cableY = (x: number) => {
+    const t = (x - left) / (right - left)
+    return (1 - t) * (1 - t) * towerTop + 2 * t * (1 - t) * ctrlY + t * t * towerTop
+  }
+
+  // Suspender cables (dim) first, so the main lines draw over them.
+  ctx.strokeStyle = gray(DIM)
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let x = left + 9; x < right - 4; x += 9) {
+    ctx.moveTo(x, cableY(x))
+    ctx.lineTo(x, deckY)
+  }
+  for (let x = 12; x < left - 4; x += 9) {
+    const t = (left - x) / left
+    ctx.moveTo(x, towerTop + (deckY - 4 - towerTop) * Math.sqrt(t))
+    ctx.lineTo(x, deckY)
+  }
+  for (let x = right + 9; x < w - 8; x += 9) {
+    const t = (x - right) / (w - right)
+    ctx.moveTo(x, towerTop + (deckY - 4 - towerTop) * Math.sqrt(t))
+    ctx.lineTo(x, deckY)
+  }
+  ctx.stroke()
+
+  // Cables: main span and the two side spans down to the anchors.
+  ctx.strokeStyle = gray(MID)
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(left, towerTop)
+  ctx.quadraticCurveTo((left + right) / 2, ctrlY, right, towerTop)
+  ctx.moveTo(left, towerTop)
+  ctx.quadraticCurveTo(left * 0.45, deckY * 0.75, 4, deckY - 4)
+  ctx.moveTo(right, towerTop)
+  ctx.quadraticCurveTo(right + (w - right) * 0.55, deckY * 0.75, w - 4, deckY - 4)
+  ctx.stroke()
+
+  // Deck.
+  ctx.lineWidth = 3
+  ctx.beginPath()
+  ctx.moveTo(2, deckY)
+  ctx.lineTo(w - 2, deckY)
+  ctx.stroke()
+
+  // Towers: two legs with cross braces, the brightest part (the Golden Gate's signature).
+  ctx.strokeStyle = gray(BRIGHT)
+  ctx.lineWidth = 3
+  for (const cx of [left, right]) {
+    ctx.beginPath()
+    ctx.moveTo(cx - 6, waterY - 4)
+    ctx.lineTo(cx - 6, towerTop - 4)
+    ctx.moveTo(cx + 6, waterY - 4)
+    ctx.lineTo(cx + 6, towerTop - 4)
+    for (const by of [towerTop + 2, towerTop + (deckY - towerTop) * 0.38, towerTop + (deckY - towerTop) * 0.72]) {
+      ctx.moveTo(cx - 6, by)
+      ctx.lineTo(cx + 6, by)
+    }
+    ctx.stroke()
+  }
+
+  // Water: two short dim dashes rows.
+  ctx.strokeStyle = gray(DIM)
+  ctx.lineWidth = 1
+  ctx.setLineDash([10, 8])
+  ctx.beginPath()
+  ctx.moveTo(10, waterY)
+  ctx.lineTo(w - 10, waterY)
+  ctx.moveTo(30, waterY + 6)
+  ctx.lineTo(w - 30, waterY + 6)
+  ctx.stroke()
+  ctx.setLineDash([])
+}
+
 function render(key: string, w: number, h: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
   canvas.width = w
@@ -125,7 +254,16 @@ function render(key: string, w: number, h: number): HTMLCanvasElement {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, w, h)
   const [type, name, arg] = key.split(':')
-  if (type === 'dot') {
+  if (type === 'text') {
+    drawText(ctx, key, w, h)
+  } else if (type === 'art' && name === 'goldengate-photo' && photo.ready) {
+    // The photo is 288 wide; the slot may be narrower: crop the centre instead of squashing it.
+    const sw = Math.min(photo.img.naturalWidth, (w / h) * photo.img.naturalHeight)
+    const sx = (photo.img.naturalWidth - sw) / 2
+    ctx.drawImage(photo.img, sx, 0, sw, photo.img.naturalHeight, 0, 0, w, h)
+  } else if (type === 'art' && name.startsWith('goldengate')) {
+    drawGoldenGate(ctx, w, h)
+  } else if (type === 'dot') {
     // "dot:on" / "dot:off": the minimized call's live blink, a ~10 px dot in the top-left of a container
     // that is bigger only to meet the glasses' 20 px minimum. Off = all black = nothing lit.
     if (name === 'on') {

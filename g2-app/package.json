@@ -1,14 +1,15 @@
 {
   "name": "standby-g2",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "sim": "node node_modules/@evenrealities/evenhub-simulator/bin/index.js http://localhost:5173 --automation-port 9898"
+    "sim": "node node_modules/@evenrealities/evenhub-simulator/bin/index.js http://localhost:5173 --automation-port 9898",
+    "pack": "npm run build && node scripts/check-urls.mjs && npx -y @evenrealities/evenhub-cli@0.1.14 pack app.json dist --sdk-ver 0.0.16 -o standby-beta.ehpk"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.16",

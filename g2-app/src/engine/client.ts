@@ -2,7 +2,7 @@
 // The engine replays state.snapshot + the current hud.screen on every (re)connect, so a dropped
 // connection redraws by itself. EventSource reconnects automatically.
 import { log } from '../debug/logger'
-import type { AskResult, EngineEvent, Gesture, InputResult, Ledger, TestsResult, VoiceResult } from './types'
+import type { AskResult, EngineEvent, Gesture, InputResult, Ledger, ListGesture, TestsResult, VoiceResult } from './types'
 
 export type EngineStatus = 'connecting' | 'live' | 'offline'
 
@@ -114,7 +114,9 @@ export function createEngine(baseUrl: string) {
     /** Recorded-call fallback the engine serves from dashboard/. */
     recordedCallUrl: `${baseUrl}/dashboard/recorded-call.mp3`,
     /** POST /input. Always sends the screen_id so the engine can tell a stale gesture apart. */
-    input: (gesture: Gesture, screen_id: string) => post<InputResult>(baseUrl, '/input', { gesture, screen_id }),
+    // `index`: on the flight list, the native list's selected row (a booking for another row is refused).
+    input: (gesture: Gesture | ListGesture, screen_id: string, index?: number) =>
+      post<InputResult>(baseUrl, '/input', index === undefined ? { gesture, screen_id } : { gesture, screen_id, index }),
     /** POST /voice: a WAV utterance (base64) or a typed transcript, for the given screen. */
     voice: (body: { screen_id: string; audio?: string; format?: 'wav'; transcript?: string }) =>
       post<VoiceResult>(baseUrl, '/voice', body, VOICE_TIMEOUT_MS),
