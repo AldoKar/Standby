@@ -1,14 +1,15 @@
 """Voice commands from the glasses: audio -> text -> one intent from a closed list.
 
 1. Speech to text: OpenRouter /audio/transcriptions (Whisper large v3 turbo by default).
-2. Intent: a keyword fast path for short answers ("yes", "no", "another one"), then, only if that
-   misses, an OpenRouter chat model that must pick one intent from the ones the current screen allows.
+2. Intent: a keyword fast path for short answers ("yes", "no", "another one"); if that misses, the
+   primary model (Jev, a decision model, ~0.2 s) picks one intent from the ones the current screen allows;
+   if Jev fails, times out or isn't sure, the fallback chat model (Claude Haiku) answers instead.
 
 The voice layer never decides on money. An "approve" on a spend screen comes back with
 confirm_required, and the glasses ask for a tap; the spend still goes through policy.py.
 English only for now.
 
-Env: OPENROUTER_API_KEY, VOICE_STT_MODEL, VOICE_INTENT_MODEL (see engine/.env.example).
+Env: OPENROUTER_API_KEY, VOICE_STT_MODEL, VOICE_INTENT_MODEL, VOICE_FALLBACK_MODEL (see engine/.env.example).
 """
 from __future__ import annotations
 
@@ -20,9 +21,15 @@ import httpx
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 STT_MODEL = os.getenv("VOICE_STT_MODEL", "openai/whisper-large-v3-turbo")
-INTENT_MODEL = os.getenv("VOICE_INTENT_MODEL", "anthropic/claude-haiku-4.5")
+# Primary intent model. A decision model (Jev, ~0.2 s) goes through the Decisions API; a chat model through
+# /chat/completions. The fallback answers only when the primary fails, times out or isn't sure.
+INTENT_MODEL = os.getenv("VOICE_INTENT_MODEL", "typesafe/jev-1.14")
+FALLBACK_MODEL = os.getenv("VOICE_FALLBACK_MODEL", "meta-llama/llama-3.3-70b-instruct")
 STT_TIMEOUT_S = 8.0
-INTENT_TIMEOUT_S = 5.0
+DECISIONS_TIMEOUT_S = 2.5  # Jev's p95 is ~0.3 s; past this, the fallback is faster than waiting
+CHAT_TIMEOUT_S = 5.0
+# Decision models other than Jev share the same API (contract: OpenRouter "Other decision models").
+DECISION_HINTS = ("-decisions", "-decide", "decision-", "pplx-decider", "/clef", "liquid/d1")
 MIN_CONFIDENCE = 0.7
 MAX_AUDIO_BYTES = 1_500_000  # ~45 s of 16 kHz mono WAV; voice commands are a few seconds
 
@@ -37,11 +44,16 @@ INTENTS: dict[str, dict[str, str]] = {
 # Intents that approve a spend: never applied by voice, the wearer confirms with a tap.
 SPEND_APPROVALS = {("booking_offer", "approve"), ("only_option", "approve"), ("fee_request", "approve")}
 
+# Written as a spec, not a hint: decision models like Jev read criteria literally.
 DESCRIPTIONS = {
-    "fix": "the traveler wants Standby to fix the cancelled flight / go ahead",
-    "approve": "the traveler agrees / says yes / wants to book or accept what is on screen",
-    "reject": "the traveler declines / says no to what is on screen",
-    "other_option": "the traveler wants a different option / another flight / other trips",
+    "fix": "The traveler wants Standby to go ahead and fix the cancelled trip "
+           "(for example: yes, fix it, sort it out, handle it, go ahead).",
+    "approve": "The traveler agrees to or accepts exactly what the glasses show "
+               "(for example: yes, book it, OK, that works, pay it, sounds good).",
+    "reject": "The traveler declines what the glasses show "
+              "(for example: no, don't, that's too much, tell them no, not that).",
+    "other_option": "The traveler asks for a different option instead of the one shown "
+                    "(for example: another flight, other trips, something else, what else is there).",
 }
 
 # Keyword fast path: short utterances only, so "no, I mean yes" goes to the model.
@@ -102,10 +114,53 @@ async def transcribe(audio_b64: str, fmt: str = "wav") -> str:
     return (r.json().get("text") or "").strip()
 
 
-async def _model_intent(transcript: str, screen_id: str, lines: list[str], allowed: dict[str, str]) -> tuple[str, float]:
-    key = _key()
-    if not key:
-        return "unknown", 0.0
+class IntentError(Exception):
+    """A model couldn't answer (HTTP error, timeout, unparseable). Never shown as "didn't understand"."""
+
+
+UNKNOWN_CRITERION = "Anything else: unrelated talk, a question, unclear, or mixed signals."
+
+
+def is_decisions_model(model: str) -> bool:
+    """Decision ("System One") models live on /api/alpha/decisions, not /chat/completions."""
+    m = model.lower()
+    return m.startswith(("typesafe/", "~typesafe/")) or any(k in m for k in DECISION_HINTS)
+
+
+async def _decisions_intent(model: str, transcript: str, lines: list[str], allowed: dict[str, str]) -> tuple[str, float]:
+    """One Choice question on the Decisions API (Jev and other decision models)."""
+    criteria = {i: DESCRIPTIONS[i] for i in allowed} | {"unknown": UNKNOWN_CRITERION}
+    body = {
+        "model": model,
+        "state": {"traveler_said": transcript, "glasses_show": " / ".join(lines)},
+        "questions": {
+            "intent": {
+                "type": "choice",
+                "instructions": "What does the traveler want, given what the glasses show?",
+                "criteria": criteria,
+            }
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=DECISIONS_TIMEOUT_S) as client:
+            r = await client.post(f"{OPENROUTER_URL.replace('/v1', '/alpha')}/decisions",
+                                  headers={"Authorization": f"Bearer {_key()}"}, json=body)
+    except httpx.HTTPError as e:
+        raise IntentError(f"{model}: {type(e).__name__}") from e
+    if r.is_error:
+        raise IntentError(f"{model}: HTTP {r.status_code} {r.text[:160]}")
+    try:
+        answer = r.json()["answers"]["intent"]
+        choice, confidence = answer["choice"], float(answer.get("confidence", 0))
+    except (ValueError, KeyError, TypeError) as e:
+        raise IntentError(f"{model}: unexpected response {r.text[:160]}") from e
+    if choice not in criteria:
+        raise IntentError(f"{model}: answered {choice!r}, not one of the options")
+    return choice, confidence
+
+
+async def _chat_intent(model: str, transcript: str, lines: list[str], allowed: dict[str, str]) -> tuple[str, float]:
+    """Chat model with a strict JSON schema whose intent is an enum of the allowed options."""
     options = list(allowed) + ["unknown"]
     system = (
         "You map what a traveler said to their smart glasses to exactly one intent.\n"
@@ -122,12 +177,12 @@ async def _model_intent(transcript: str, screen_id: str, lines: list[str], allow
         "additionalProperties": False,
     }
     try:
-        async with httpx.AsyncClient(timeout=INTENT_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
             r = await client.post(
                 f"{OPENROUTER_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
+                headers={"Authorization": f"Bearer {_key()}"},
                 json={
-                    "model": INTENT_MODEL,
+                    "model": model,
                     "temperature": 0,
                     "max_tokens": 40,
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": transcript}],
@@ -135,26 +190,70 @@ async def _model_intent(transcript: str, screen_id: str, lines: list[str], allow
                                         "json_schema": {"name": "intent", "strict": True, "schema": schema}},
                 },
             )
-        if r.is_error:
-            return "unknown", 0.0
+    except httpx.HTTPError as e:
+        raise IntentError(f"{model}: {type(e).__name__}") from e
+    if r.is_error:
+        raise IntentError(f"{model}: HTTP {r.status_code} {r.text[:160]}")
+    try:
         content = r.json()["choices"][0]["message"]["content"] or ""
         match = re.search(r"\{.*\}", content, re.S)  # tolerate models that wrap JSON in prose
         data = json.loads(match.group(0) if match else content)
-    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        return "unknown", 0.0
-    intent, confidence = data.get("intent"), data.get("confidence", 0)
-    if intent not in allowed or not isinstance(confidence, (int, float)) or confidence < MIN_CONFIDENCE:
-        return "unknown", float(confidence) if isinstance(confidence, (int, float)) else 0.0
-    return intent, float(confidence)
+        intent, confidence = data["intent"], float(data.get("confidence", 0))
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        raise IntentError(f"{model}: unexpected response") from e
+    if intent not in options:
+        raise IntentError(f"{model}: answered {intent!r}, not one of the options")
+    return intent, confidence
 
 
-async def classify(transcript: str, screen_id: str, lines: list[str]) -> tuple[str, float, str]:
-    """Return (intent, confidence, via). via is "keywords", "model" or "none"."""
+async def _ask(model: str, transcript: str, lines: list[str], allowed: dict[str, str]) -> tuple[str, float]:
+    if is_decisions_model(model):
+        return await _decisions_intent(model, transcript, lines, allowed)
+    return await _chat_intent(model, transcript, lines, allowed)
+
+
+async def _model_intent(transcript: str, lines: list[str], allowed: dict[str, str]) -> tuple[str, float, str, str | None]:
+    """Primary model first (fast, e.g. Jev); the fallback (Haiku) only when the primary fails or isn't sure.
+
+    Returns (intent, confidence, model_used, error). A confident "unknown" from the primary is accepted:
+    re-asking a slower model about unrelated talk only adds latency.
+    """
+    if not _key():
+        return "unknown", 0.0, "none", "voice not configured: no OPENROUTER_API_KEY"
+    errors: list[str] = []
+    models = [INTENT_MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != INTENT_MODEL else [])
+    best: tuple[str, float, str] | None = None
+    for i, model in enumerate(models):
+        last = i == len(models) - 1
+        try:
+            intent, confidence = await _ask(model, transcript, lines, allowed)
+        except IntentError as e:
+            errors.append(str(e))
+            continue
+        if confidence >= MIN_CONFIDENCE or last:
+            best = (intent, confidence, model)
+            break
+        best = (intent, confidence, model)  # not sure: keep it, but let the fallback have a go
+        errors.append(f"{model}: low confidence {confidence:.2f} for {intent}")
+    if best is None:
+        return "unknown", 0.0, models[-1], "intent model failed: " + " | ".join(errors)
+    intent, confidence, used = best
+    if confidence < MIN_CONFIDENCE:
+        intent = "unknown"
+    return intent, confidence, used, ("; ".join(errors) or None)
+
+
+async def classify(transcript: str, screen_id: str, lines: list[str]) -> tuple[str, float, str, str | None, str | None]:
+    """Return (intent, confidence, via, model, note).
+
+    via is "keywords", "model" or "none"; model is the one that answered; note explains a failure or a
+    fallback (e.g. "typesafe/jev-1.14: HTTP 400 ..."), so errors are never reported as "didn't understand".
+    """
     allowed = intents_for(screen_id)
     if not transcript or not allowed:
-        return "unknown", 0.0, "none"
+        return "unknown", 0.0, "none", None, None
     fast = _fast_intent(transcript, allowed)
     if fast:
-        return fast, 1.0, "keywords"
-    intent, confidence = await _model_intent(transcript, screen_id, lines, allowed)
-    return intent, confidence, "model"
+        return fast, 1.0, "keywords", None, None
+    intent, confidence, used, note = await _model_intent(transcript, lines, allowed)
+    return intent, confidence, "model", used, note

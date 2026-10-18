@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useReducer, useState } from 'react'
 import './App.css'
 import { eventToChat } from './chat/eventText'
 import { ChatPanel, type ChatMessage } from './components/ChatPanel'
@@ -16,6 +16,9 @@ import { currentPagePlan, currentScreen, showScreen, subscribeHud } from './hud/
 import { handleGesture } from './hud/gestures'
 import { planScreen } from './hud/layout'
 import { fromEngine, idleScreen, offlineScreen, type HudScreen } from './hud/screens'
+import { Insights } from './insights/Insights'
+import { initialInsights, insightsReducer, LEDGER_EVENTS, RING_NUDGE_MS } from './insights/state'
+import type { Ledger } from './engine/types'
 import { startVoice } from './voice/listener'
 import { VoiceTester } from './voice/VoiceTester'
 
@@ -85,6 +88,9 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [welcome()])
   const [busy, setBusy] = useState(false)
   const [step, setStep] = useState<Step | null>(null)
+  const [insights, dispatchInsight] = useReducer(insightsReducer, undefined, initialInsights)
+  const [ledger, setLedger] = useState<Ledger | null>(null)
+  const [ringNudge, setRingNudge] = useState<string | null>(null)
 
   const say = (role: ChatMessage['role'], text: string) =>
     setMessages((m) => [...m, { id: nextMsgId++, role, text }])
@@ -121,6 +127,34 @@ function App() {
     [],
   )
 
+  // Judge-facing panels: policy trace, call, activity (reducer) + ledger (refetched when it changes).
+  useEffect(() => {
+    let ringTimer: ReturnType<typeof setTimeout> | undefined
+    const refreshLedger = () =>
+      engine
+        .ledger()
+        .then(setLedger)
+        .catch((err) => log(`GET /ledger failed: ${(err as Error).message}`))
+    const off = subscribe((e) => {
+      dispatchInsight(e)
+      if (LEDGER_EVENTS.has(e.type)) void refreshLedger()
+      // A live call that hasn't asked anything after 10 s: suggest the recorded call.
+      if (e.type === 'call.started' && e.data.mode === 'elevenlabs') {
+        clearTimeout(ringTimer)
+        ringTimer = setTimeout(() => setRingNudge('No ring after 10 seconds? Play the recorded call.'), RING_NUDGE_MS)
+      }
+      if (e.type === 'approval.requested' || e.type === 'call.completed' || e.type === 'demo.reset') {
+        clearTimeout(ringTimer)
+        setRingNudge(null)
+      }
+    })
+    if (!SHOT) void refreshLedger()
+    return () => {
+      clearTimeout(ringTimer)
+      off()
+    }
+  }, [engine])
+
   // Live engine connection (skipped for DEV ?shot previews, so the preview stays on screen).
   useEffect(() => {
     if (SHOT) return
@@ -148,6 +182,11 @@ function App() {
       if (gesture) void handleGesture(engine, gesture)
     })
   }, [engine])
+
+  // Deep link: /#insights jumps to the judge panels (the browser can't, they render after load).
+  useEffect(() => {
+    if (location.hash === '#insights') document.getElementById('insights')?.scrollIntoView()
+  }, [])
 
   // Presenter shortcuts.
   useEffect(() => {
@@ -213,6 +252,8 @@ function App() {
           />
         </div>
       </div>
+
+      <Insights s={insights} ledger={ledger} engine={engine} nudge={insights.nudge ?? ringNudge} />
 
       <footer className="footer">
         <details className="devtools" open={DEV_OPEN}>

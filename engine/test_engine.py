@@ -280,6 +280,66 @@ def test_voice_commands(c):
     c.post("/demo/reset")
 
 
+def test_voice_model_fallback(c):
+    """Jev first; Haiku only when Jev fails or isn't sure; a failure is never reported as "didn't understand".
+    The models are stubbed: no network, no cost."""
+    import asyncio
+    from app import voice
+
+    calls = []
+    lines = ["Delta tonight 9:15 PM", "$215 · lands 10:40"]
+    allowed = voice.intents_for("booking_offer")
+    phrase = "Yeah thanks, book it for me please."  # too long for the keyword path
+    real = (voice._ask, voice.INTENT_MODEL, voice.FALLBACK_MODEL, os.environ.get("OPENROUTER_API_KEY"))
+    os.environ["OPENROUTER_API_KEY"] = "test-key"
+    voice.INTENT_MODEL, voice.FALLBACK_MODEL = "typesafe/jev-1.14", "anthropic/claude-haiku-4.5"
+
+    def stub(answers):
+        async def ask(model, transcript, lines_, allowed_):
+            calls.append(model)
+            a = answers[model]
+            if isinstance(a, Exception):
+                raise a
+            return a
+        voice._ask = ask
+
+    try:
+        assert voice.is_decisions_model("typesafe/jev-1.14") and not voice.is_decisions_model("anthropic/claude-haiku-4.5")
+        # 1. Jev answers confidently: Haiku is never called
+        calls.clear(); stub({"typesafe/jev-1.14": ("approve", 0.97)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[:2] == ("approve", 0.97) and r[3] == "typesafe/jev-1.14" and calls == ["typesafe/jev-1.14"]
+        # 2. Jev errors (e.g. HTTP 400): Haiku answers, the note says why
+        calls.clear(); stub({"typesafe/jev-1.14": voice.IntentError("typesafe/jev-1.14: HTTP 400"),
+                             "anthropic/claude-haiku-4.5": ("approve", 0.95)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "approve" and r[3] == "anthropic/claude-haiku-4.5" and "HTTP 400" in r[4]
+        # 3. Jev unsure: Haiku gets a say
+        calls.clear(); stub({"typesafe/jev-1.14": ("approve", 0.4), "anthropic/claude-haiku-4.5": ("approve", 0.9)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "approve" and calls == ["typesafe/jev-1.14", "anthropic/claude-haiku-4.5"]
+        # 4. Both fail: unknown, and the reason reaches the glasses as a failure
+        stub({"typesafe/jev-1.14": voice.IntentError("jev down"), "anthropic/claude-haiku-4.5": voice.IntentError("haiku down")})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "unknown" and r[4].startswith("intent model failed")
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "press"})
+        reply = c.post("/voice", json={"screen_id": "booking_offer", "transcript": phrase}).json()
+        assert reply["intent"] == "unknown" and reply["reason"].startswith("intent model failed")
+        # 5. The keyword path still answers instantly, no model at all
+        calls.clear()
+        assert asyncio.run(voice.classify("okay", "booking_offer", lines))[:3] == ("approve", 1.0, "keywords")
+        assert calls == []
+    finally:
+        voice._ask, voice.INTENT_MODEL, voice.FALLBACK_MODEL = real[0], real[1], real[2]
+        if real[3] is None:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            os.environ["OPENROUTER_API_KEY"] = real[3]
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -292,6 +352,7 @@ CASES = [
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
+    ("Voice: Jev first, Haiku fallback, failures reported", test_voice_model_fallback),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
