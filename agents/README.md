@@ -62,9 +62,14 @@ before ASI:One can reach it. Run both agents on the Vultr box under systemd for 
 1. Start the engine and the orchestrator as above.
 2. In a fresh chat at [asi1.ai](https://asi1.ai), find the agent by description
    ("rebooks cancelled flights", "flight cancelled handle it") or by its address.
-3. Type: `My UA183 got cancelled, handle it`
+3. Type: `@standby My UA183 got cancelled, handle it`
+
+   **Mention the handle on every message, not just the first.** Without it ASI:One routes
+   the message to your own assistant instead of the agent — it will happily invent its own
+   booking plan and spin for minutes while the agent sits idle. The agent's replies name
+   the handle in the ask for this reason (`ASI_HANDLE`, default `@standby`).
 4. You should get the three options with two struck through and the policy reason for each.
-5. Reply `approve`. You get two messages: the booking, then the call outcome with the door
+5. Reply `@standby approve`. You get two messages: the booking, then the call outcome with the door
    code and the ledger. The session ends on that second message.
 6. `status?` at any point answers from engine state rather than from the transcript.
 7. Share the chat and paste the URL into the table at the top.

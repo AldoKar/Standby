@@ -41,6 +41,14 @@ MAX_TOKENS = 300
 MAX_TOOL_HOPS = 6
 RESOLVE_TIMEOUT_S = 40  # the mock call takes ~6s; a real ElevenLabs call is slower
 
+# In ASI:One, a message without an @mention goes to the user's own assistant instead of
+# here, which silently strands the conversation. Every prompt for a reply names the handle
+# so the traveller (and a judge) knows to keep mentioning it. Blank it out for clients
+# where mentions are meaningless.
+HANDLE = os.getenv("ASI_HANDLE", "@standby").strip()
+REPLY_WITH = f'{HANDLE} approve" or "{HANDLE} no' if HANDLE else 'approve" or "no'
+
+
 # Chat replies are short, so give the whole 300-token budget to the answer rather than
 # to thinking. Sonnet 5 reaches for tools less eagerly with thinking off, which is why
 # the system prompt spells out when to call each one.
@@ -77,7 +85,9 @@ How to reply:
 - At most 5 short lines. No preamble, no markdown headings, no emoji.
 - Lead with what happened. Give the number and the reason, not adjectives.
 - When a spend needs the traveller's OK, state the amount, what is left of the budget \
-afterwards and the fee allowance, then ask them to reply "approve" or "no".
+afterwards and the fee allowance, then ask them to reply "REPLY_WITH".
+- Always include the handle when you ask them to reply. A reply without it never reaches \
+you: the chat sends it to the traveller's own assistant instead.
 - Quote money figures exactly as the tool gave them. Never add, subtract or estimate an \
 amount yourself.
 - Say "book" and "approve", never "pay", "card" or "Visa".
@@ -96,8 +106,10 @@ UA183 LAX-SFO is cancelled. Two of the three alternatives are out:
 That leaves Delta DL1946, 9:15 PM, $215, lands 10:40 tonight. That's $85 of your $300 \
 left afterwards, and I'd hold a $50 allowance for fees downstream.
 
-Reply "approve" or "no".
+Reply "REPLY_WITH".
 """
+
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("REPLY_WITH", REPLY_WITH)
 
 TOOLS = [
     {
