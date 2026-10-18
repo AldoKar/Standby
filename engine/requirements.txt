@@ -5,3 +5,4 @@ httpx
 anthropic
 python-dotenv
 cryptography
+tzdata==2026.5  # airport time zones for live flights (Windows has no system tz database)

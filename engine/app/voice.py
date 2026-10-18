@@ -97,18 +97,18 @@ def _key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY") or None
 
 
-async def transcribe(audio_b64: str, fmt: str = "wav") -> str:
-    """Speech to text through OpenRouter. Raises RuntimeError with a short reason."""
+async def transcribe(audio_b64: str, fmt: str = "wav", language: str | None = "en") -> str:
+    """Speech to text through OpenRouter. language=None lets Whisper detect it (free questions to /ask).
+    Raises RuntimeError with a short reason."""
     key = _key()
     if not key:
         raise RuntimeError("voice not configured: no OPENROUTER_API_KEY")
+    body = {"model": STT_MODEL, "input_audio": {"data": audio_b64, "format": fmt}, "temperature": 0}
+    if language:
+        body["language"] = language
     async with httpx.AsyncClient(timeout=STT_TIMEOUT_S) as client:
-        r = await client.post(
-            f"{OPENROUTER_URL}/audio/transcriptions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": STT_MODEL, "input_audio": {"data": audio_b64, "format": fmt}, "language": "en",
-                  "temperature": 0},
-        )
+        r = await client.post(f"{OPENROUTER_URL}/audio/transcriptions",
+                              headers={"Authorization": f"Bearer {key}"}, json=body)
     if r.is_error:
         raise RuntimeError(f"transcription failed: HTTP {r.status_code} {r.text[:200]}")
     return (r.json().get("text") or "").strip()

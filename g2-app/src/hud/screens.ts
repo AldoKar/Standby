@@ -28,7 +28,14 @@ export type HudScreen = {
   tapConfirms?: boolean
   confirm?: { of: HudScreen } // set on the local confirm screen; `of` is the engine screen being approved
   voice?: VoiceState // set by the voice layer (src/voice/listener.ts) on screens that take voice commands
+  // Free mode: text alone in the middle of the lens (up to 3 bright lines, no icon). Used by the `answer`
+  // screen and the push-to-talk steps.
+  center?: boolean
+  // Set on the local push-to-talk screens; `of` is the engine screen to go back to.
+  ask?: { of: HudScreen; phase: AskPhase }
 }
+
+export type AskPhase = 'listening' | 'thinking' | 'failed'
 
 /**
  * listening: mic verified live → the hint adds "· or say it".
@@ -41,7 +48,7 @@ export type VoiceState = 'listening' | 'thinking' | 'missed' | 'offline'
 /** Screens the engine accepts voice commands on (contract/api.md "Voice intents per screen"). */
 export const VOICE_SCREENS = new Set(['cancelled', 'booking_offer', 'only_option', 'fee_request'])
 
-type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar'>
+type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar' | 'center'>
 
 // Status header per screen. Never "pay", "card" or "Visa" on the glasses (SPEC).
 const STYLES: Record<string, Style> = {
@@ -55,6 +62,7 @@ const STYLES: Record<string, Style> = {
   denied: { header: 'STANDBY · BLOCKED', icon: 'alert', alert: true },
   no_option: { header: 'STANDBY', icon: 'alert', alert: true },
   resolved: { header: 'STANDBY · DONE', icon: 'check' },
+  answer: { header: 'STANDBY · ANSWER', center: true },
 }
 const DEFAULT_STYLE: Style = { header: 'STANDBY', icon: 'none' }
 
@@ -88,6 +96,14 @@ export function fromEngine(s: EngineScreen): HudScreen {
     style = { header: 'STANDBY', icon: 'alert', alert: true }
   }
   const lines = [...s.lines]
+
+  // An answer is all facts (no gesture line): every line bright, in the middle. The hint is app-owned and
+  // comes from the gestures the engine offers ("dismiss", and "ask" again in free mode).
+  if (style.center) {
+    const choices: HudChoice[] = [{ gesture: 'tap', label: 'back' }]
+    if (s.gestures.hold === 'ask') choices.push({ gesture: 'hold', label: 'ask again' })
+    return { id: s.screen_id, ...style, lines: lines.slice(0, 3), choices, gestures: s.gestures, tapConfirms: false }
+  }
 
   // The last line is the gesture hint when it parses as one; it becomes buttons.
   let labels: Partial<Record<Gesture, string>> = {}
@@ -145,6 +161,25 @@ export function confirmScreen(of: HudScreen): HudScreen {
     voice: undefined, // the confirm step is tap-only: spends always need a tap
     confirm: { of },
   }
+}
+
+/**
+ * Push-to-talk steps (free mode). App-owned, like the confirm step: the engine only sees the question.
+ * listening: the mic is open for one question. thinking: it was sent. failed: say why, then go back.
+ */
+export function askScreen(of: HudScreen, phase: AskPhase, why = "Didn't catch that"): HudScreen {
+  const base = { id: `ask:${phase}`, icon: 'none' as const, center: true, gestures: {}, tapConfirms: false, ask: { of, phase } }
+  if (phase === 'listening') {
+    return {
+      ...base,
+      header: 'STANDBY · LISTENING',
+      lines: ['Ask me anything', 'about your trip'],
+      detail: 'Any language',
+      choices: [{ gesture: 'tap', label: 'cancel' }],
+    }
+  }
+  if (phase === 'thinking') return { ...base, header: 'STANDBY · THINKING…', lines: ['One moment…'] }
+  return { ...base, header: 'STANDBY', lines: [why], choices: [{ gesture: 'hold', label: 'try again' }] }
 }
 
 export function idleScreen(build: string): HudScreen {

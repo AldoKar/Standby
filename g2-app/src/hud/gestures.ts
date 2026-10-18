@@ -29,9 +29,33 @@ function settled(screen: HudScreen, gesture: Gesture, minMs: number): boolean {
   return false
 }
 
+// Push-to-talk (free mode) lives in the voice layer, which owns the mic; it registers itself here so this
+// file doesn't import it (the voice layer already imports openConfirm from here).
+type AskHandlers = { start: (engine: Engine) => void; cancel: () => void }
+let askHandlers: AskHandlers | null = null
+export function setAskHandlers(h: AskHandlers | null): void {
+  askHandlers = h
+}
+
 /** Entry point for every temple / mirror / keyboard gesture. */
 export async function handleGesture(engine: Engine, gesture: Gesture): Promise<void> {
   const screen = currentScreen()
+
+  // On a push-to-talk step: tap/swipe = back, long press on "try again" = ask again.
+  if (screen.ask) {
+    if (!settled(screen, gesture, SETTLE_MS[gesture])) return
+    if (gesture === 'hold' && screen.ask.phase === 'failed') askHandlers?.start(engine)
+    else if (gesture !== 'hold') askHandlers?.cancel()
+    return
+  }
+
+  // Long press where the engine offers "ask" (free mode) = push-to-talk. Never sent to /input.
+  if (gesture === 'hold' && screen.gestures.hold === 'ask') {
+    if (!settled(screen, gesture, SETTLE_MS.hold)) return
+    if (askHandlers) askHandlers.start(engine)
+    else log('ask: voice layer not running')
+    return
+  }
 
   // On the local confirm screen.
   if (screen.confirm) {

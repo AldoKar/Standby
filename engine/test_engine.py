@@ -10,6 +10,7 @@ os.environ.setdefault("MOCK_CALL_END_S", "0.2")
 os.environ["CALL_MODE"] = "mock"
 os.environ["FLIGHTS_MODE"] = "mock"  # nor real flight orders
 os.environ["AGENT_MODE"] = "off"  # nor Claude calls (test_agent stubs it)
+os.environ["LIVE_FLIGHT"] = "off"  # nor FlightAware lookups (test_free_mode stubs it)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -528,8 +529,9 @@ def test_ask(c):
 
     seen = {}
 
-    async def fake_claude(phase, facts, tools, on_step):
+    async def fake_claude(phase, facts, tools, on_step, model=None):
         assert phase == "ask" and set(tools) == {"read_vault", "check_flight_status", "read_ledger", "read_task"}
+        assert model == agent.ASK_MODEL
         for f in ("UA183", "DL1946", "UA1"):
             seen[f] = await tools["check_flight_status"]({"flight": f})
         seen["vault"] = await tools["read_vault"]({})
@@ -539,8 +541,9 @@ def test_ask(c):
     async def live(flight):
         return {"flight": flight, "status": "Delayed", "gate": "G1", "source": "flightaware"}
 
-    real = (agent.enabled, agent.run, status.enabled, status.fetch)
+    real = (agent.enabled, agent.run, status.enabled, status.fetch, agent.can_ask)
     agent.enabled, agent.run, status.enabled, status.fetch = (lambda: True), fake_claude, (lambda: True), live
+    agent.can_ask = lambda: True
     try:
         c.post("/demo/reset")
         r = c.post("/ask", json={"question": "Is UA1 on time?"}).json()
@@ -561,10 +564,71 @@ def test_ask(c):
         assert not r["shown"] and c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
         assert seen["UA183"]["status"] == "cancelled"
 
-        agent.enabled = lambda: False
+        agent.can_ask = lambda: False
         assert c.post("/ask", json={"question": "hi"}).status_code == 503
     finally:
-        agent.enabled, agent.run, status.enabled, status.fetch = real
+        agent.enabled, agent.run, status.enabled, status.fetch, agent.can_ask = real
+        c.post("/demo/reset")
+
+
+def test_free_mode(c):
+    """Free mode: the traveler's flight is a real one (FlightAware, stubbed), a push-to-talk question in any
+    language is transcribed without a fixed language and answered by the ask model with live data; Start
+    then cancels that same flight. No network."""
+    import json as j
+
+    from app import agent, status, voice
+    from app import main as engine
+
+    seen = {}
+
+    async def next_departure(origin, dest, prefer="UA", **_):
+        assert (origin, dest) == ("LAX", "SFO")
+        return {"flight": "UA781", "airline": "UA", "route": "LAX-SFO", "status": "Scheduled",
+                "scheduled_departure": "06:00", "date": "2026-10-18", "source": "flightaware",
+                "fa_flight_id": "UAL781-1"}
+
+    async def live(flight, fa_flight_id=None):
+        seen["fa_flight_id"] = fa_flight_id
+        return {"flight": flight, "status": "On time", "gate": "71B", "source": "flightaware"}
+
+    async def stt(audio, fmt="wav", language="en"):
+        seen["language"] = language
+        return "¿Mi vuelo sale a tiempo?"
+
+    async def fake_claude(phase, facts, tools, on_step, model=None):
+        seen.update(model=model, facts=facts, status=await tools["check_flight_status"]({"flight": "UA781"}))
+        return j.dumps({"answer": "Tu vuelo UA781 sale a tiempo, puerta 71B.", "glasses": ["UA781 a tiempo", "Puerta 71B"]})
+
+    real = (engine.LIVE_FLIGHT, dict(engine.TRIP), status.enabled, status.next_departure, status.fetch,
+            voice.transcribe, agent.can_ask, agent.run)
+    engine.LIVE_FLIGHT, status.enabled, status.next_departure, status.fetch = "auto", (lambda: True), next_departure, live
+    voice.transcribe, agent.can_ask, agent.run = stt, (lambda: True), fake_claude
+    try:
+        c.post("/demo/reset")
+        c.portal.call(engine.load_live_flight, True)
+        s = c.get("/state").json()
+        assert s["trip"]["flight"] == "UA781" and s["trip"]["live"] and s["trip"]["departs"] == "06:00"
+        assert s["vault"][0]["data"]["flight"] == "UA781"
+        assert s["screen"]["gestures"] == {"press": "start", "hold": "ask"}
+
+        r = c.post("/ask", json={"audio": "UklGRg==", "format": "wav"}).json()
+        assert r["question"] == "¿Mi vuelo sale a tiempo?" and seen["language"] is None
+        assert seen["model"] == agent.ASK_MODEL and seen["status"]["source"] == "flightaware"
+        assert seen["facts"]["travelers_flight"]["flight"] == "UA781" and seen["fa_flight_id"] == "UAL781-1"
+        assert seen["facts"]["travelers_flight_live_status"]["gate"] == "71B"  # handed over up front
+        s = c.get("/state").json()
+        assert s["screen"]["screen_id"] == "answer" and s["screen"]["gestures"]["hold"] == "ask"
+
+        c.post("/input", json={"gesture": "press"})  # dismiss the answer: back to free mode
+        assert c.post("/input", json={"gesture": "press"}).json()["stage"] == "cancelled"  # Start
+        s = c.get("/state").json()
+        assert s["screen"]["lines"][0] == "UA781 cancelled"
+    finally:
+        (engine.LIVE_FLIGHT, trip, status.enabled, status.next_departure, status.fetch,
+         voice.transcribe, agent.can_ask, agent.run) = real
+        engine.TRIP.clear()
+        engine.TRIP.update(trip)
         c.post("/demo/reset")
 
 
@@ -587,6 +651,7 @@ CASES = [
     ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
     ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
     ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
+    ("Free mode: real flight, push-to-talk in any language, Start cancels that flight", test_free_mode),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
