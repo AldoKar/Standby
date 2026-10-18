@@ -84,5 +84,28 @@
     "amount_usd": 189,
     "rule": "DOT automatic refund rule (2024)"
   },
-  "fee_allowance_usd_asi1": 50
+  "fee_allowance_usd_asi1": 50,
+  "travel_benefits": {
+    "program": "Visa Signature travel benefits",
+    "label": "Simulated benefits for the demo; real terms vary by card and issuer",
+    "token_id": "agt_tok_demo_7Q2X",
+    "requires": "Trip paid with the covered token, and the carrier cancelled it or delayed it 6+ hours",
+    "claim_within_days": 60,
+    "benefits": [
+      {
+        "id": "trip_interruption",
+        "name": "Trip interruption",
+        "covers": "The extra cost of new transportation to reach your destination when the carrier cancels: the new fare minus any refund of the original fare",
+        "cap_usd": 1500,
+        "mcc": ["3000-3299", "4511"]
+      },
+      {
+        "id": "trip_delay",
+        "name": "Trip delay",
+        "covers": "Reasonable lodging fees, meals and essentials caused by the cancellation or a 6+ hour delay",
+        "cap_usd": 500,
+        "mcc": ["7011", "5812", "5814"]
+      }
+    ]
+  }
 }

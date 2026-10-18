@@ -374,7 +374,7 @@ def test_signed_payments(c):
 def test_vault(c):
     c.post("/demo/reset")
     seeded = c.get("/vault").json()["items"]
-    assert [i["type"] for i in seeded] == ["boarding_pass", "lodging_confirmation"]
+    assert [i["type"] for i in seeded] == ["boarding_pass", "lodging_confirmation", "travel_benefits"]
     assert seeded[1]["data"]["confirmation"] == "48213" and all(i["source"] == "traveler" for i in seeded)
 
     # the glasses flow saves the new boarding pass and the call
@@ -385,7 +385,7 @@ def test_vault(c):
     c.post("/input", json={"gesture": "hold"})
     wait_for(c, "resolved")
     items = c.get("/vault").json()["items"]
-    new_pass, call_log = items[2], items[3]
+    new_pass, call_log = items[3], items[4]
     assert new_pass["type"] == "boarding_pass" and new_pass["data"]["flight"] == "DL1946"
     assert new_pass["data"]["replaces"] == "UA183"
     assert new_pass["data"]["payment_reference"] and new_pass["source"] == "agent"
@@ -398,7 +398,7 @@ def test_vault(c):
 
     # reset brings back only what the traveler had
     c.post("/demo/reset")
-    assert len(c.get("/vault").json()["items"]) == 2
+    assert len(c.get("/vault").json()["items"]) == 3
 
 
 def test_real_call_fee_screen(c):
@@ -460,7 +460,7 @@ def test_live_flights(c):
         c.post("/input", json={"gesture": "press"})
         c.post("/input", json={"gesture": "hold"})
         wait_for(c, "calling")
-        assert c.get("/vault").json()["items"][2]["data"]["pnr"] == "X7K2QZ"
+        assert c.get("/vault").json()["items"][3]["data"]["pnr"] == "X7K2QZ"
 
         flights.search = broken
         c.post("/demo/reset")
@@ -547,7 +547,7 @@ def test_ask(c):
         assert r["glasses"] == ["UA1 delayed 89 min", "Gate G1"] and r["shown"]
         assert seen["UA183"]["status"] == "scheduled" and seen["DL1946"]["source"] == "trip"
         assert seen["UA1"]["source"] == "flightaware" and seen["ledger"]["remaining_usd"] == 300
-        assert len(seen["vault"]["items"]) == 2
+        assert len(seen["vault"]["items"]) == 3
         assert c.get("/state").json()["screen"]["screen_id"] == "answer"
         c.post("/input", json={"gesture": "press"})  # dismiss: back to ready, the flow didn't start
         s = c.get("/state").json()
@@ -565,6 +565,91 @@ def test_ask(c):
         assert c.post("/ask", json={"question": "hi"}).status_code == 503
     finally:
         agent.enabled, agent.run, status.enabled, status.fetch = real
+        c.post("/demo/reset")
+
+
+def test_trip_claim(c):
+    """After the trip is handled, the traveler's benefits pay back what they cover: the new fare minus the
+    airline refund ($215 - $189 = $26) plus the $40 late fee = $66. Code checks every amount (Claude's
+    over-claim of the full fare is refused), nothing is sent until the wearer taps, and the ledger shows it.
+    No network: agent.run is a scripted Claude."""
+    from app import agent
+    from app import main as engine
+
+    def finish_trip():
+        for g in ("press", "press", "hold"):
+            c.post("/input", json={"gesture": g})
+        wait_for(c, "fee")
+        c.post("/input", json={"gesture": "hold"})
+
+    def wait_screen(screen_id, timeout=8):
+        end = time.time() + timeout
+        while time.time() < end:
+            s = c.get("/state").json()
+            if s["screen"]["screen_id"] == screen_id:
+                return s
+            time.sleep(0.1)
+        raise AssertionError(f"never showed {screen_id}; last: {s['screen']['screen_id']}")
+
+    tried = []
+
+    async def fake_claude(phase, facts, tools, on_step):
+        if phase != "claim":
+            raise RuntimeError("only the claim is scripted here")
+        spends = (await tools["read_ledger"]({}))["spends"]
+        delta, fee = (next(x["reference"] for x in spends if x["kind"] == k) for k in ("booking", "fee"))
+        greedy = await tools["file_claim"]({"items": [
+            {"reference": delta, "benefit_id": "trip_interruption", "amount_usd": 215, "reason": "new flight"}],
+            "letter": "x"})
+        tried.append(greedy)
+        ok = await tools["file_claim"]({"items": [
+            {"reference": delta, "benefit_id": "trip_interruption", "amount_usd": 26, "reason": "fare difference"},
+            {"reference": fee, "benefit_id": "trip_delay", "amount_usd": 40, "reason": "late check-in"}],
+            "letter": "Claim for Alex Rivera: UA183 cancelled; $26 fare difference, $40 late check-in."})
+        assert ok["claim_ready"] == 66
+        return "Your $66 claim is ready to submit."
+
+    real = (engine.CLAIM_DELAY_S, agent.enabled, agent.run)
+    engine.CLAIM_DELAY_S = 0.1
+    try:
+        # scripted (no Claude): same $66, the wearer submits with a tap
+        c.post("/demo/reset")
+        finish_trip()
+        s = wait_screen("claim_ready")
+        assert s["screen"]["lines"] == ["Trip claim ready", "$66 back expected", "Tap = submit"]
+        assert s["claim"]["status"] == "ready" and s["claim"]["drafted_by"] == "script"
+        assert [(i["benefit_id"], i["amount_usd"]) for i in s["claim"]["items"]] == [
+            ("trip_interruption", 26), ("trip_delay", 40)]
+        assert all(i["receipt"]["signature_verified"] for i in s["claim"]["items"])
+        assert s["ledger"]["claims_expected_usd"] == 0  # nothing is sent before the tap
+        c.post("/input", json={"gesture": "press", "screen_id": "claim_ready"})
+        s = c.get("/state").json()
+        assert s["claim"]["status"] == "submitted" and s["screen"]["screen_id"] == "claim_submitted"
+        assert s["ledger"]["claims_expected_usd"] == 66 and s["ledger"]["net_after_claims_usd"] == 0
+        assert c.get("/vault").json()["items"][-1]["type"] == "trip_claim"
+
+        # Claude drafts it; its over-claim is refused and it fixes it
+        agent.enabled, agent.run = (lambda: True), fake_claude
+        c.post("/demo/reset")
+        finish_trip()  # plan/arrival fail on purpose: the scripted flow takes over
+        s = wait_screen("claim_ready")
+        assert "more than the $26 allowed" in tried[0]["refused"][0]
+        assert s["claim"]["drafted_by"] == "agent" and s["claim"]["total_usd"] == 66
+        c.post("/input", json={"gesture": "swipe_down"})  # later: stays ready, nothing submitted
+        s = c.get("/state").json()
+        assert s["claim"]["status"] == "ready" and s["ledger"]["claims"] == []
+
+        # dismissing the outcome before the claim shows cancels it
+        agent.enabled = lambda: False
+        engine.CLAIM_DELAY_S = 0.5
+        c.post("/demo/reset")
+        finish_trip()
+        wait_for(c, "resolved")
+        c.post("/input", json={"gesture": "press"})
+        time.sleep(0.8)
+        assert c.get("/state").json()["claim"] is None
+    finally:
+        engine.CLAIM_DELAY_S, agent.enabled, agent.run = real
         c.post("/demo/reset")
 
 
@@ -587,6 +672,7 @@ CASES = [
     ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
     ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
     ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
+    ("Trip claim: benefits pay back $66, code caps amounts, wearer submits", test_trip_claim),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
