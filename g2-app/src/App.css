@@ -164,17 +164,22 @@
 }
 
 /* --- Chat --- */
+/* Framed panel so the chat stands out from the white page. */
 .chat {
   display: flex;
   flex-direction: column;
-  min-height: 280px;
+  min-height: 320px;
   flex: 1;
+  background: var(--surface);
+  border: 1px solid #c9c9c4;
+  border-radius: 12px;
+  padding: 14px 14px 12px;
 }
 
 .messages {
   list-style: none;
   margin: 0;
-  padding: 4px 0 12px;
+  padding: 4px 2px 12px;
   flex: 1;
   max-height: 46vh;
   overflow-y: auto;
@@ -185,60 +190,67 @@
 
 .msg {
   line-height: 1.5;
-  font-size: 15px;
-  max-width: 90%;
+  font-size: 16px;
+  max-width: 88%;
+  padding: 10px 14px;
+  overflow-wrap: anywhere;
 }
 
+/* Agent: white bubble with a visible border. */
 .msg-agent {
   align-self: flex-start;
   color: var(--ink);
+  background: var(--bg);
+  border: 1px solid #c9c9c4;
+  border-radius: 14px 14px 14px 2px;
 }
 
+/* User: dark bubble, white text (high contrast). */
 .msg-user {
   align-self: flex-end;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  color: var(--bg);
+  background: var(--ink);
   border-radius: 14px 14px 2px 14px;
-  padding: 8px 12px;
 }
 
-/* System events: a quiet timeline instead of chat bubbles. */
+/* System events: timeline rows, still readable. */
 .msg-system {
   align-self: stretch;
   max-width: none;
-  font-size: 13px;
-  color: var(--ink-3);
-  padding-left: 14px;
+  font-size: 14px;
+  color: var(--ink-2);
+  padding: 2px 0 2px 16px;
   position: relative;
 }
 
 .msg-system::before {
   content: '';
   position: absolute;
-  left: 3px;
-  top: 0.6em;
-  width: 5px;
-  height: 5px;
+  left: 4px;
+  top: 0.75em;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--ink-3);
+  background: var(--ink-2);
 }
 
 .composer {
   display: flex;
   align-items: center;
-  gap: 12px;
-  border-top: 1px solid var(--ink);
-  padding-top: 10px;
+  gap: 10px;
+  border-top: 1px solid #c9c9c4;
+  padding-top: 12px;
 }
 
 .composer input {
   flex: 1;
-  border: 0;
-  background: transparent;
+  border: 1px solid #a8a8a2;
+  border-radius: 8px;
+  background: var(--bg);
   color: var(--ink);
   font: inherit;
-  font-size: 15px;
-  padding: 6px 0;
+  font-size: 16px;
+  padding: 9px 12px;
 }
 
 .composer input::placeholder {
@@ -246,12 +258,14 @@
 }
 
 .composer input:focus-visible {
-  outline: none;
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+  border-color: var(--ink);
 }
 
-.composer:focus-within {
-  border-top-width: 2px;
-  padding-top: 9px;
+.composer .btn {
+  padding: 9px 16px;
+  border-radius: 8px;
 }
 
 /* --- Lens stage (dark, dot grid) --- */
