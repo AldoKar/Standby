@@ -14,7 +14,9 @@ Base URL: the engine (locally `http://localhost:8000`). All bodies are JSON, and
 | `POST /approval` | Orchestrator agent, dashboard | `{"approval_id"?, "task_id"?, "approved", "fee_allowance_usd"?}` → the approval. Without an id it answers the latest pending approval |
 | `POST /call/approval` | Voice agent tool `request_approval` | `{"amount", "reason", "kind"?, "merchant"?, "mcc"?}` → `{approval_id, status}`; status is pending, approved or denied |
 | `GET /call/approval/{approval_id}` | Voice agent tool `check_approval` | → `{approval_id, status}`; status is pending, approved, rejected or denied |
-| `POST /call/completed` | Post-call adapter for the voice agent | `{"held", "door_code"?, "contact"?, "fee_usd"?, "transcript_url"?, "verified"?}` |
+| `POST /call/completed` | Post-call adapter for the voice agent | `{"held", "door_code"?, "contact"?, "fee_usd"?, "transcript_url"?, "verified"?, "transcript"?}`. With `transcript` ("Agent: ...
+Clerk: ..."), Gemini checks the outcome against it; a door code reaches the glasses only when verified |
+| `POST /call/webhook` | ElevenLabs post-call webhook | ElevenLabs' own `post_call_transcription` / `call_initiation_failure` payload, signed with `ELEVENLABS_WEBHOOK_SECRET` (401 otherwise). The engine builds the transcript, has Gemini check it and finishes the task. Needs `task_id` in the call's dynamic variables (the engine sets it) |
 | `POST /merchant/payment-request` | Mock merchant | `{"merchant", "amount", "mcc"}` → paid, or refused by the mandate |
 | `GET /ledger` | Dashboard | Mandate, spends, refunds, consent records, denied attempts, remaining budget |
 | `POST /mandate` | Phone, after the passkey sign-in | Mandate fields to override → the mandate |
