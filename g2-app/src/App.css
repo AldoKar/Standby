@@ -1,0 +1,501 @@
+.app {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 48px 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-height: 100vh;
+}
+
+/* --- Hero --- */
+.hero h1 {
+  margin: 0;
+  font-size: clamp(36px, 5vw, 56px);
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.hero-sub {
+  margin: 12px 0 0;
+  max-width: 560px;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* --- Layout: actions + chat left, lens stage right --- */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: 32px;
+  align-items: stretch;
+  flex: 1;
+}
+
+.col-left {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+
+.col-right {
+  min-width: 0;
+}
+
+/* Narrow screens (the phone WebView): actions and chat first, lens below. */
+@media (max-width: 900px) {
+  .app {
+    padding: 24px 16px;
+  }
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.section-label {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* --- Buttons --- */
+.btn {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  padding: 6px 14px;
+  font-size: 14px;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: progress;
+}
+
+.btn-primary {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #333;
+}
+
+.btn-link {
+  margin-top: 10px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.btn-link:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+/* --- Acts list (Even feature-list style) --- */
+.act-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+}
+
+.act {
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  transition: background-color 0.25s ease;
+}
+
+.act:first-child {
+  border-top: 0;
+}
+
+.act-active {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.act-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.act-icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+.act-desc {
+  margin: 4px 0 10px 26px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.act-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: 26px;
+}
+
+/* --- Chat --- */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+  flex: 1;
+}
+
+.messages {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 12px;
+  flex: 1;
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg {
+  line-height: 1.5;
+  font-size: 15px;
+  max-width: 90%;
+}
+
+.msg-agent {
+  align-self: flex-start;
+  color: var(--ink);
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 2px 14px;
+  padding: 8px 12px;
+}
+
+/* System events: a quiet timeline instead of chat bubbles. */
+.msg-system {
+  align-self: stretch;
+  max-width: none;
+  font-size: 13px;
+  color: var(--ink-3);
+  padding-left: 14px;
+  position: relative;
+}
+
+.msg-system::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0.6em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--ink);
+  padding-top: 10px;
+}
+
+.composer input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  padding: 6px 0;
+}
+
+.composer input::placeholder {
+  color: var(--ink-3);
+}
+
+.composer input:focus-visible {
+  outline: none;
+}
+
+.composer:focus-within {
+  border-top-width: 2px;
+  padding-top: 9px;
+}
+
+/* --- Lens stage (dark, dot grid) --- */
+.stage {
+  height: 100%;
+  min-height: 420px;
+  background-color: var(--stage);
+  background-image: radial-gradient(rgba(61, 255, 110, 0.14) 1px, transparent 1.2px);
+  background-size: 14px 14px;
+  padding: 20px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  color: #cfd5cf;
+}
+
+.stage-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.stage-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9aa39a;
+}
+
+.stage-status {
+  font-size: 13px;
+  color: #9aa39a;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b726b;
+}
+
+.status-connected {
+  color: var(--lens-green);
+}
+.status-connected .status-dot {
+  background: var(--lens-green);
+  box-shadow: 0 0 6px var(--lens-green);
+}
+.status-connecting .status-dot {
+  background: #c9c25a;
+}
+.status-error {
+  color: #ff8a80;
+}
+.status-error .status-dot {
+  background: #ff8a80;
+}
+
+/* Mirror of the 576×288 lens. Sizes use container units so 1 lens px = 100cqw / 576.
+   Only the frame is styled; the content is exactly what the glasses get. */
+.lens {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 576 / 288;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(61, 255, 110, 0.22),
+    0 0 40px rgba(61, 255, 110, 0.06);
+  container-type: inline-size;
+}
+
+.lens-box {
+  position: absolute;
+  padding: calc(100cqw * 4 / 576);
+  color: var(--lens-green); /* brightness is applied as opacity */
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 300;
+  font-size: calc(100cqw * 22 / 576);
+  line-height: calc(100cqw * 28 / 576);
+  white-space: pre;
+  overflow: hidden;
+}
+
+.lens-border {
+  border: calc(100cqw * 2 / 576) solid var(--lens-green);
+  border-radius: calc(100cqw * 10 / 576);
+}
+
+.lens-img {
+  position: absolute;
+  image-rendering: pixelated;
+}
+
+.gestures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gesture {
+  background: transparent;
+  color: #e6ebe6;
+  border: 1px solid rgba(230, 235, 230, 0.45);
+  border-radius: 2px;
+  padding: 7px 12px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture:hover {
+  border-color: var(--lens-green);
+  color: var(--lens-green);
+}
+
+.gesture:focus-visible {
+  outline-color: var(--lens-green);
+}
+
+.gesture kbd {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: #9aa39a;
+  border: 1px solid rgba(154, 163, 154, 0.5);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* --- Footer / developer tools --- */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.build {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.devtools {
+  flex: 1;
+  min-width: 0;
+}
+
+.devtools summary {
+  cursor: pointer;
+  color: var(--ink-3);
+}
+
+.devtools[open] summary {
+  margin-bottom: 12px;
+}
+
+.dev-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dev-panel select {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 5px 8px;
+  font: inherit;
+}
+
+.dev-panel button {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  padding: 5px 10px;
+}
+
+.debug-log {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.debug-log ol {
+  list-style: none;
+  padding: 8px;
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.debug-log time {
+  color: var(--ink-3);
+}
+
+/* --- Engine connection status (lens stage) --- */
+.stage-statuses {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.engine-live {
+  color: var(--lens-green);
+}
+.engine-live .status-dot {
+  background: var(--lens-green);
+}
+.engine-connecting .status-dot {
+  background: #c9c25a;
+}
+.engine-offline {
+  color: #ff8a80;
+}
+.engine-offline .status-dot {
+  background: #ff8a80;
+}
+
+/* Gestures the current screen doesn't offer */
+.gesture:disabled,
+.gesture:disabled:hover {
+  opacity: 0.35;
+  cursor: default;
+  border-color: rgba(230, 235, 230, 0.45);
+  color: #e6ebe6;
+}

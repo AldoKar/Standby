@@ -1,37 +1,74 @@
-# G2 glasses app (owner: P3)
+# G2 glasses app: Standby (owner: P3)
 
-The glasses are display and gestures only. The engine sends every screen as a `hud.screen` event; the app renders its `lines` and posts gestures to `POST /input`.
+Vite + React + Even Hub SDK. The engine writes every screen (`hud.screen`); this app renders it on the G2 and on a
+browser mirror, and posts gestures to `POST /input`. Contract: `contract/events.md`, `contract/api.md`.
 
-## Wire it up
+## Run
 
-1. Start from Even's official template (minimal or asr) and get one line of text plus one gesture working on the G2.
-2. Copy `src/handle-it-client.ts` into the app.
-3. After `await waitForEvenAppBridge()`, call `connect(BACKEND_URL, screen => render(screen.lines))`. `render` updates your text container. Check the SDK README for the exact text-update call (the starter pack names `textContainerUpgrade`).
-4. Enable `isEventCapture` on the container and handle `onEvenHubEvent`:
-   - tap → `sendGesture(BACKEND_URL, 'press')`
-   - long press → `sendGesture(BACKEND_URL, 'hold')`
-   - swipe down → `sendGesture(BACKEND_URL, 'swipe_down')`
-   - **double press: never.** On the root page it opens the system exit dialog.
-5. Keep approval screens on a non-root page.
-6. Add the engine's domain to the network whitelist in `app.json`. The engine must be HTTPS with a valid certificate. Until it's deployed, use your laptop's LAN IP, not localhost.
+```bash
+# terminal 1: engine (see GETTING-STARTED.md)
+cd engine && uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-## Screens you will receive (demo order)
+# terminal 2: this app
+cd g2-app && npm install && npm run dev        # http://localhost:5173
 
-| screen_id | Lines | Gestures |
+# terminal 3: simulator
+cd g2-app && npm run sim
+```
+
+Engine URL, in order: `?api=https://host`, `VITE_ENGINE_URL`, otherwise the page's own host on port 8000
+(so QR sideload on the laptop's LAN IP finds the engine on the same IP).
+
+Real glasses (QR sideload), from the repo root (the CLI's peer dep conflicts with TypeScript 6 inside g2-app):
+
+```bash
+npx -y @evenrealities/evenhub-cli@0.1.14 qr --url "http://<LAN-IP>:5173"
+```
+
+## How it renders (design option B)
+
+The engine's `lines` are shown verbatim. The app only decides the look (`src/hud/screens.ts`):
+
+- Icon, alert border and a small status header per `screen_id` (e.g. `calling` → "STANDBY IS CALLING", phone icon,
+  voice-wave animation).
+- The gesture line ("Hold = OK, Swipe = no", "Hold to book", "Tap = fix it") becomes buttons; labels come from that
+  line, or from `gestures` values for gestures the line doesn't mention ("Other").
+- `clear_after_s` blanks the lens; an empty `lines` is a blank lens.
+- Never "pay", "card" or "Visa" in the app-owned header.
+
+## Gestures
+
+| Temple | Sent | Notes |
 |---|---|---|
-| `ready` | Ready / Tap to start | press = start |
-| `cancelled` | UA183 cancelled / United: 7:05 AM tmrw / Tap = fix it | press = fix |
-| `booking_offer` | Delta tonight 9:15 PM / $215 · lands 10:40 / Hold to book | hold = approve, swipe down = other |
-| `booked` | Booked · pass saved | none |
-| `calling` | Desk closes 11:00 PM / You land 10:40 / Calling guesthouse | none |
-| `fee_request` | +$40 late check-in / Guesthouse asks / Hold = OK, Swipe = no | hold = approve, swipe down = reject |
-| `resolved` | Room held / Door code 4417 (clears after 10 s) | press = dismiss |
+| Tap | `press` | |
+| Long press | `hold` | approve |
+| Swipe down | `swipe_down` | ignored for 900 ms after a new screen (the simulator emits stray scroll events on rebuild) |
+| Double press | nothing | left to the system exit dialog |
 
-You can drive the same flow from the dashboard (`GET /` on the engine) with the Press, Hold and Swipe buttons while the glasses app is still in progress.
+Only gestures listed in the current screen's `gestures` are sent, always with its `screen_id`, one at a time.
+
+Presenter keys on the page: Space = tap, H = hold, ↓ = swipe down.
+
+## Dev tools
+
+- Footer → Developer tools (or `?dev`): on-device log, screen previews, glyph probe.
+- `?shot=<screen_id>` (DEV only) previews one engine screen offline, without connecting to the engine.
 
 ## Checklist
 
-- [ ] 4:30 PM: G2 shows text from the deployed engine, and a tap reaches the server
-- [ ] 6:00 PM at the Even table: long press reaches the app; an idle display wakes when text updates; Even confirms in writing that booking/fee approvals are OK in the Beta
-- [ ] 11:00 PM: Beta uploaded and passes the 5-minute phone-lock test
+- [x] Renders `hud.screen` from the engine and sends press / hold / swipe_down (simulator, local engine)
+- [x] Full demo flow in the simulator against the mock engine: ledger $255 spent, $45 left, net $66
+- [ ] 4:30 PM: G2 shows text from the deployed engine over HTTPS, and a tap reaches the server
+- [ ] Swipe down on real G2 arrives as SCROLL_BOTTOM_EVENT (verify)
+- [ ] 6:00 PM at the Even table: long press works, idle display wakes on text update, root vs non-root pages for
+      approvals, written OK for booking/fee approvals in the Beta
+- [ ] `app.json`: package_id, name "Standby", network whitelist with the engine's HTTPS origin
+- [ ] 11:00 PM: Beta uploaded; passes the 5-minute phone-lock test
 - [ ] iPhone, auto-lock off, phone hotspot for judging
+
+## Notes for other owners
+
+- P1: `/input` ignores `screen_id`; rejecting gestures for a stale `screen_id` would protect money screens.
+- P1: "Room not held" reuses `screen_id: resolved`; a separate id would let the glasses style it as a failure.
+- P1: `contract/api.md` says policy lives in `backend/app/policy.py`; it's `engine/app/policy.py`.
+- P1/everyone: SPEC still says "Handle It"; the app uses "Standby".
