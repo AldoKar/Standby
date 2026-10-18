@@ -1,0 +1,88 @@
+{
+  "traveler": {
+    "name": "Alex Rivera",
+    "user_id": "demo-user"
+  },
+  "booking": {
+    "airline": "United",
+    "flight": "UA183",
+    "from": "LAX",
+    "to": "SFO",
+    "date": "2026-10-18",
+    "departs": "18:10",
+    "price_usd": 189,
+    "pnr": "ABC123"
+  },
+  "deadline": {
+    "label": "SF tonight",
+    "arrive_by": "23:59"
+  },
+  "airline_offer": {
+    "airline": "United",
+    "flight": "UA2104",
+    "departs": "07:05",
+    "arrives": "08:30",
+    "day": "tomorrow",
+    "price_usd": 0
+  },
+  "options": [
+    {
+      "id": "opt-united",
+      "airline": "United",
+      "flight": "UA2104",
+      "departs": "07:05",
+      "arrives": "08:30",
+      "day": "tomorrow",
+      "price_usd": 0,
+      "mcc": "3000"
+    },
+    {
+      "id": "opt-american",
+      "airline": "American",
+      "flight": "AA2401",
+      "departs": "20:30",
+      "arrives": "21:55",
+      "day": "today",
+      "price_usd": 319,
+      "mcc": "3001"
+    },
+    {
+      "id": "opt-delta",
+      "airline": "Delta",
+      "flight": "DL1946",
+      "departs": "21:15",
+      "arrives": "22:40",
+      "day": "today",
+      "price_usd": 215,
+      "mcc": "3058"
+    }
+  ],
+  "lodging": {
+    "name": "Hayes St Guesthouse",
+    "confirmation": "48213",
+    "desk_closes": "23:00",
+    "note": "Front desk closes 11 PM; late arrivals call ahead.",
+    "travel_minutes_from_airport": 50,
+    "mcc": "7011"
+  },
+  "call_script_mock": {
+    "fee_usd": 40,
+    "fee_reason": "late check-in",
+    "door_code": "4417",
+    "contact": "Maria"
+  },
+  "mandate": {
+    "instruction": "Get me to SF tonight. Up to $300 total. Ask me before any spend over $25.",
+    "budget_usd": 300,
+    "ask_over_usd": 25,
+    "allowed_mcc": ["3000-3299", "4511", "7011"],
+    "expires_hours": 48,
+    "token_id": "agt_tok_demo_7Q2X"
+  },
+  "refund": {
+    "airline": "United",
+    "amount_usd": 189,
+    "rule": "DOT automatic refund rule (2024)"
+  },
+  "fee_allowance_usd_asi1": 50
+}

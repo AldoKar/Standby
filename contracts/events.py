@@ -89,6 +89,22 @@ class FlightCancelled(BaseModel):
     flight: str
     route: str      # "LAX-SFO"
 
+class FlightStatus(BaseModel):     # current snapshot, on request ("what's my flight status?")
+    flight: str
+    route: str
+    status: Optional[str] = None   # "Scheduled", "En Route / On Time", "Cancelled", ...
+    cancelled: bool = False
+    gate: Optional[str] = None
+    terminal: Optional[str] = None
+    delay_min: int = 0
+    departure: Optional[str] = None
+    arrival: Optional[str] = None
+
+class FlightDelayed(BaseModel):
+    flight: str
+    minutes: int            # total departure delay
+    new_departure: str      # "HH:MM" local to origin airport
+
 class CallStarted(BaseModel):
     provider: str
 
@@ -121,6 +137,8 @@ EVENT_DATA: dict[str, type[BaseModel]] = {
     "gate.changed": GateChanged,
     "boarding.soon": BoardingSoon,
     "flight.cancelled": FlightCancelled,
+    "flight.delayed": FlightDelayed,
+    "flight.status": FlightStatus,
     "call.started": CallStarted,
     "call.completed": CallCompleted,
     "task.resolved": TaskResolved,
@@ -131,7 +149,7 @@ EVENT_DATA: dict[str, type[BaseModel]] = {
 EventType = Literal[
     "trip.requested", "task.started", "option.found", "approval.requested",
     "approval.granted", "approval.rejected", "payment.executed", "flight.booked",
-    "gate.changed", "boarding.soon", "flight.cancelled", "call.started",
+    "gate.changed", "boarding.soon", "flight.cancelled", "flight.delayed", "flight.status", "call.started",
     "call.completed", "task.resolved", "task.failed", "vault.updated",
 ]
 
