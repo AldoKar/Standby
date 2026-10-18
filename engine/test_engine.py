@@ -1,6 +1,7 @@
 """Run from engine/:  python test_engine.py"""
 import os
 import time
+from pathlib import Path
 
 os.environ.setdefault("MOCK_CLERK_DELAY_S", "0.2")
 os.environ.setdefault("MOCK_CALL_END_S", "0.2")
@@ -197,13 +198,66 @@ def test_elevenlabs_webhook(c):
         c.post("/demo/reset")
 
 
+def test_call_failure_and_long_poll(c):
+    import threading
+    c.post("/demo/reset")
+    c.post("/tasks", json={})
+    a = [x for x in c.get("/state").json()["approvals"] if x["status"] == "pending"][0]
+    # long-poll: the check waits for the wearer instead of returning "pending" at once
+    threading.Timer(0.5, lambda: c.post("/approval", json={"approval_id": a["approval_id"], "approved": False})).start()
+    t = time.time()
+    r = c.get(f"/call/approval/{a['approval_id']}?wait_s=5").json()
+    assert r["status"] == "rejected" and time.time() - t < 4
+    # without wait_s it answers at once (unchanged behavior)
+    assert c.get(f"/call/approval/{a['approval_id']}").json()["status"] == "rejected"
+
+    # a call that never connects ends on a clear screen, not "Calling guesthouse"
+    import hashlib, hmac, json as _json
+    os.environ["ELEVENLABS_WEBHOOK_SECRET"] = "whsec_test"
+    task_id = c.get("/state").json()["task_id"]
+    body = _json.dumps({"type": "call_initiation_failure",
+                        "data": {"conversation_initiation_client_data": {"dynamic_variables": {"task_id": task_id}}}})
+    ts = str(int(time.time()))
+    sig = hmac.new(b"whsec_test", f"{ts}.{body}".encode(), hashlib.sha256).hexdigest()
+    c.post("/call/webhook", content=body, headers={"elevenlabs-signature": f"t={ts},v0={sig}"})
+    s = wait_for(c, "resolved")
+    assert s["screen"]["lines"] == ["Call didn't connect", "Details on your phone"]
+    c.post("/demo/reset")
+
+
+# Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
+CASES = [
+    ("Glasses flow end to end", test_glasses_flow),
+    ("ASI:One flow with fee allowance", test_asi1_flow_with_fee_allowance),
+    ("#2 Big fee ($90) denied, #9 small fee allowed", test_policy_denies_over_budget),
+    ("#8 Over-budget flight, bad amounts, wrong merchant, expired mandate", test_policy_hostile_cases),
+    ("Merchant charges: logged, once per approval", test_merchant_payment_request),
+    ("#5/#6 Call outcome checked against transcript", test_call_outcome_verification),
+    ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),
+    ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
+]
+RESULTS = Path(__file__).parent / "test-results.json"
+
 if __name__ == "__main__":
+    import json
+    import traceback
+    from datetime import datetime, timezone
+
+    results = []
     with TestClient(app) as client:
-        test_glasses_flow(client)
-        test_asi1_flow_with_fee_allowance(client)
-        test_policy_denies_over_budget(client)
-        test_policy_hostile_cases(client)
-        test_merchant_payment_request(client)
-        test_call_outcome_verification(client)
-        test_elevenlabs_webhook(client)
+        for name, fn in CASES:
+            try:
+                fn(client)
+                results.append({"name": name, "passed": True, "detail": "ok"})
+            except Exception as e:
+                detail = str(e) or traceback.format_exc(limit=1).strip().splitlines()[-1]
+                results.append({"name": name, "passed": False, "detail": detail[:200]})
+                client.post("/demo/reset")
+    passed = sum(r["passed"] for r in results)
+    RESULTS.write_text(json.dumps({"ran_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                   "passed": passed, "total": len(results), "cases": results}, indent=2))
+    for r in results:
+        print("PASS" if r["passed"] else "FAIL", r["name"], "" if r["passed"] else f"-> {r['detail']}")
+    if passed < len(results):
+        raise SystemExit(f"{len(results) - passed} failed")
     print("engine ok")

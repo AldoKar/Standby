@@ -22,8 +22,12 @@ async def start_call(dynamic_variables: dict) -> dict:
     }
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(OUTBOUND_URL, headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]}, json=payload)
-        r.raise_for_status()
-        return r.json()
+    if r.is_error:  # keep ElevenLabs' error body so the dashboard can say why
+        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
+    body = r.json()
+    if not body.get("success"):  # a 200 with success: false means no call was placed
+        raise RuntimeError(f"ElevenLabs did not place the call: {body.get('message')}")
+    return body  # success, message, conversation_id, callSid
 
 
 # ---------- post-call webhook ----------

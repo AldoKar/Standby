@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import call, policy, verify
@@ -223,10 +224,18 @@ async def after_booking() -> None:
         try:
             await start_call(variables)
         except Exception as e:  # keep the demo alive; the dashboard can play the recorded call
-            await publish("call.completed", {"outcome": {"held": False, "error": str(e)}, "transcript_url": None, "verified": False})
+            await call_failed(str(e))
     else:
         await asyncio.sleep(MOCK_CLERK_DELAY_S)
         await request_fee(MOCK["call_script_mock"]["fee_usd"], MOCK["call_script_mock"]["fee_reason"])
+
+
+async def call_failed(reason: str) -> None:
+    """The call never connected: say so on the glasses instead of sitting on "Calling guesthouse"."""
+    S.outcome = {"held": False, "error": reason, "verified": False}
+    await publish("call.completed", {"outcome": S.outcome, "transcript_url": None, "verified": False})
+    S.stage = "resolved"
+    await show("call_failed", ["Call didn't connect", "Details on your phone"], {"press": "dismiss"}, 10)
 
 
 async def request_fee(amount: float, reason: str, merchant: str | None = None, mcc: str | None = None) -> dict:
@@ -414,11 +423,16 @@ async def call_approval(r: SpendRequest):
 
 
 @app.get("/call/approval/{approval_id}")
-def call_approval_status(approval_id: str):
-    """Voice tool check_approval."""
+async def call_approval_status(approval_id: str, wait_s: float = 0):
+    """Voice tool check_approval. With wait_s, holds the request until the wearer answers
+    or time runs out (capped at 12 s), since the voice agent can't sleep between checks."""
     a = S.approvals.get(approval_id)
     if not a:
         raise HTTPException(404, f"no approval {approval_id}")
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0.0, min(wait_s, 12.0))
+    while a["status"] == "pending" and loop.time() < end:
+        await asyncio.sleep(0.25)
     return {"approval_id": approval_id, "status": a["status"]}
 
 
@@ -460,7 +474,7 @@ async def call_webhook(request: Request):
             await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None)
         run_later(check_and_finish())
     elif event.get("type") == "call_initiation_failure":
-        run_later(finish_call({"held": False, "verified": False, "issues": ["the call did not connect"]}, None))
+        run_later(call_failed("the call did not connect"))
     return {"ok": True}
 
 
@@ -505,6 +519,19 @@ def flights_search():
     return {"options": policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])}
 
 
+@app.get("/tests")
+def tests():
+    """Last `python test_engine.py` run, for the dashboard's pass-rate panel."""
+    results = Path(__file__).resolve().parents[1] / "test-results.json"
+    if not results.exists():
+        raise HTTPException(404, "no test run yet; run python test_engine.py in engine/")
+    return json.loads(results.read_text())
+
+
 @app.get("/")
 def dashboard():
     return FileResponse(DASHBOARD)
+
+
+# The dashboard's other files, e.g. the recorded-call fallback at /dashboard/recorded-call.mp3.
+app.mount("/dashboard", StaticFiles(directory=DASHBOARD.parent), name="dashboard")
