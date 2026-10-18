@@ -17,7 +17,7 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 | `mandate.checked` | Any spend is checked | `kind`, `amount`, `remaining`, `result` (allow, ask, deny), `reason` |
 | `approval.requested` | A spend needs the wearer's OK | `approval_id`, `kind` (booking, fee), `amount`, `merchant`, `reason` |
 | `approval.granted` / `approval.rejected` | The wearer or ASI:One answered | `approval_id`, `kind`, `via` (glasses, asi1, api) |
-| `payment.executed` | A spend went through (simulated) | `amount`, `merchant`, `mcc`, `token_id`, `reference` |
+| `payment.executed` | A spend went through (simulated) | `amount`, `merchant`, `mcc`, `token_id`, `reference`, `signature` (`keyid`, `tag`, `verified`: the TAP-style signed request the merchant checked) |
 | `offer.declined` | The airline's own rebooking is turned down | `airline`, `flight`, `refund_usd`, `status` |
 | `vault.updated` | Something was saved to the Vault | `type` (boarding_pass, call_transcript) |
 | `cutoff.detected` | The agent spots a downstream problem | `place`, `closes_at`, `arrival`, `eta` |

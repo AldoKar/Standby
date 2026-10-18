@@ -5,6 +5,9 @@ from pathlib import Path
 
 os.environ.setdefault("MOCK_CLERK_DELAY_S", "0.2")
 os.environ.setdefault("MOCK_CALL_END_S", "0.2")
+# Never place real calls from the tests, even if engine/.env says CALL_MODE=elevenlabs
+# (app/__init__ loads .env, but variables already set here win).
+os.environ["CALL_MODE"] = "mock"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -248,6 +251,32 @@ def test_stale_gestures_and_not_held(c):
     c.post("/demo/reset")
 
 
+def test_signed_payments(c):
+    """Every spend carries a TAP-style signature the merchant can check; tampering breaks it."""
+    import base64
+    from app import tap
+    c.post("/demo/reset")
+    assert c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()["status"] == "approved"
+    sig = c.get("/ledger").json()["spends"][0]["signature"]
+    assert sig["verified"] and sig["tag"] == "agent-payer-auth" and sig["keyid"] == tap.KEY_ID
+
+    # the key directory publishes the matching public key
+    jwk = c.get(tap.DIRECTORY_PATH).json()["keys"][0]
+    pub = base64.urlsafe_b64decode(jwk["x"] + "==")
+
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    # replaying the same signed request is refused
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub) == (False, "replayed nonce")
+    # changing the amount, the merchant or the signature breaks it
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert not tap.verify("guesthouse.merchant.example", "/agent/pay", b'{"amount":400}', headers, pub)[0]
+    assert not tap.verify("evil.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    forged = {**headers, "Signature": "sig1=:" + base64.b64encode(b"x" * 64).decode() + ":"}
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, forged, pub) == (False, "bad signature")
+    c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -259,6 +288,7 @@ CASES = [
     ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
+    ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
