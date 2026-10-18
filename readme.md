@@ -75,7 +75,7 @@ The same flow runs from a chat in [ASI:One](https://asi1.ai), with interactive c
                    ▼                         ▼      ▼
               ┌───────────── engine (FastAPI on Vultr, HTTPS) ─────────────┐
               │ Claude agent loop (plan · arrival · claim · ask)           │
-              │ policy.py: mandate, budget, ask-over limit  (money rules)  │
+              │ policy.py: mandate rules: budget, merchants, expiry        │
               │ claims.py: benefit rules  ·  tap.py: signed payments       │
               │ SSE /events → glasses + dashboard  ·  Vault  ·  ledger     │
               └──┬───────────┬────────────┬────────────┬──────────────────┘
@@ -164,8 +164,8 @@ The engine suite stubs Claude, Duffel, FlightAware and ElevenLabs, and covers th
 
 ## Trust and safety
 
-- **Code decides money, never the model.** Every spend goes through `engine/app/policy.py` (budget, ask-over limit, merchant categories, expiry). Claude can propose a limit or a claim; code rounds, caps and checks it, and refuses anything else.
-- **Consent at the moment it matters.** One tap for the limit, one per flight and fee over $25. Voice can never approve a spend: it asks for a tap.
+- **Code decides money, never the model.** Every spend goes through `engine/app/policy.py` (budget, merchant categories, expiry). Claude can propose a limit or a claim; code rounds, caps and checks it, and refuses anything else.
+- **Consent at the moment it matters.** One tap for the limit, then one for every flight and fee, whatever the amount. Voice can never approve a spend: it asks for a tap.
 - **Signed payments.** Each merchant request is signed (RFC 9421, Ed25519, `agent-payer-auth`), modeled on Visa's Trusted Agent Protocol; the public key is at `/.well-known/http-message-signatures-directory`. Tampering and replays are refused.
 - **Verified outcomes.** A door code reaches the glasses only if Claude marks the call verified and the code literally appears in the transcript.
 - **Disclosed calls.** The voice agent says it's an AI assistant, and never reads out card details.
