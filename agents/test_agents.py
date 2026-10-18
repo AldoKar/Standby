@@ -190,6 +190,19 @@ async def test_guardrails() -> None:
     assert fresh["history"] == [] and fresh["task_id"] is None, fresh
     ok("a /demo/reset clears the chat transcript instead of arguing about a dead trip")
 
+    # a relay that remembers an OLD task sends "approve" while a NEW task waits on a spend
+    # (seen live in ASI:One: "There's nothing pending for you to approve right now")
+    old = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), old, "get_booking", {})
+    await reset()
+    new = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), new, "get_booking", {})
+    adopted = await orch.ensure_fresh(Ctx(), {**old, "history": [{"role": "user", "content": "old"}]})
+    assert adopted["task_id"] == new["task_id"] and adopted["approval_id"], adopted
+    a = await orch.run_tool(Ctx(), adopted, "request_approval", {})
+    assert a["pending"] and a["amount_usd"] == 215, a
+    ok("a relay with a stale task adopts the one in flight, so its approve reaches the pending spend")
+
 
 # ---------- interactive cards ----------
 
