@@ -18,6 +18,7 @@ Base URL: the engine (locally `http://localhost:8000`). All bodies are JSON, and
 Clerk: ..."), Claude checks the outcome against it; a door code reaches the glasses only when verified |
 | `POST /call/webhook` | ElevenLabs post-call webhook | ElevenLabs' own `post_call_transcription` / `call_initiation_failure` payload, signed with `ELEVENLABS_WEBHOOK_SECRET` (401 otherwise). The engine builds the transcript, has Claude check it and finishes the task. Needs `task_id` in the call's dynamic variables (the engine sets it) |
 | `POST /merchant/payment-request` | Mock merchant | `{"merchant", "amount", "mcc"}` → paid, or refused by the mandate |
+| `GET /.well-known/http-message-signatures-directory` | Merchants, dashboard | The agent's Ed25519 public key (JWKS) for checking signed payment requests |
 | `GET /ledger` | Dashboard | Mandate, spends, refunds, consent records, denied attempts, remaining budget |
 | `POST /mandate` | Phone, after the passkey sign-in | Mandate fields to override → the mandate |
 | `GET /flights/search` | Anyone | Mock options, ranked by the policy engine |
