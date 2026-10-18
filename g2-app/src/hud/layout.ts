@@ -89,9 +89,17 @@ export function planScreen(s: HudScreen): PagePlan {
   }
   const hasHint = Boolean(s.choices?.length)
   // Dialog (confirm step): no icon, so the question and its recap start near the card's left edge.
+  // Center (free mode answer / push-to-talk): no icon, a 3-row block in the middle of the lens. The SDK can't
+  // align text, so a single line gets one blank row above it to sit in the middle row. Fixed geometry, so
+  // listening → thinking → answer are cheap text upgrades, not page rebuilds.
   const box = s.dialog
     ? { x: 36, w: 516, mainY: 92, mainH: 40, detailY: 134, detailMax: 46 }
-    : { x: 84, w: 472, mainY: 84, mainH: 80, detailY: 158, detailMax: MAX_CHARS }
+    : s.center
+      ? { x: 36, w: 504, mainY: 100, mainH: 96, detailY: 192, detailMax: 46 } // rows are ~28 px on the G2 font
+      : { x: 84, w: 472, mainY: 84, mainH: 80, detailY: 158, detailMax: MAX_CHARS }
+  const mainLines = s.center ? s.lines.slice(0, 3) : s.lines.slice(0, 2)
+  const mainText = mainLines.map((l) => clamp(l)).join('\n')
+  const mainContent = s.center && mainLines.length === 1 ? `\n${mainText}` : mainText
   texts.push(
     {
       id: 2,
@@ -114,7 +122,7 @@ export function planScreen(s: HudScreen): PagePlan {
       w: box.w,
       h: box.mainH,
       color: BRIGHT,
-      content: s.lines.slice(0, 2).map((l) => clamp(l)).join('\n') || BLANK,
+      content: mainContent || BLANK,
       capture: true, // exactly one container captures gestures
       z: 3,
     },
@@ -144,14 +152,15 @@ export function planScreen(s: HudScreen): PagePlan {
 
   // No icon container in the dialog: even an empty (black) image sits above the text and hides
   // the start of "Are you sure?" (z-order), so it must not exist there at all.
-  const images: ImageSpec[] = s.dialog
-    ? []
-    : [{ id: 6, name: 'icon', x: 24, y: 96, w: 48, h: 48, key: `icon:${s.icon ?? 'none'}`, z: 6 }]
+  const images: ImageSpec[] =
+    s.dialog || s.center
+      ? []
+      : [{ id: 6, name: 'icon', x: 24, y: 96, w: 48, h: 48, key: `icon:${s.icon ?? 'none'}`, z: 6 }]
   if (s.bar) {
     images.push({ id: 7, name: 'bar', x: 92, y: 166, w: 288, h: 24, key: 'bar:wave:0', z: 7 })
   }
 
-  // Positions differ in the dialog, so it's its own page structure (one rebuild in, one out).
-  const kind = s.dialog ? 'dialog' : s.alert ? 'alert' : blank ? 'blank' : 'plain'
+  // Positions differ in the dialog and the centered block, so each is its own page structure.
+  const kind = s.dialog ? 'dialog' : s.center ? 'center' : s.alert ? 'alert' : blank ? 'blank' : 'plain'
   return { signature: `${kind}${s.bar ? '+bar' : ''}`, texts, images }
 }
