@@ -38,11 +38,15 @@ Defined in `engine/app/voice.py`. Every other phrase is `unknown` and changes no
 |---|---|---|
 | `cancelled` | `fix` → `press` (yes to the spending limit) · `reject` → `swipe_down` | "yes", "fix it", "go ahead"; "no" spends nothing |
 | `declined` | `fix` → `press` | "fix it" brings the limit back |
-| `flight_list` | `approve` → tap to confirm | "book it" asks for a tap on the highlighted flight. No "another one": the glasses' native list owns the selection, so the wearer scrolls it |
+| `flight_list` | `choose` (with `index`) → tap to confirm | Picked by **Ollama** (`OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_API_KEY` for Ollama Cloud): "the Alaska one", "the cheapest", "the ten o'clock", "the second one" name a row; "book it" / "yes" is the highlighted row (no model call). The engine changes nothing: `/voice` returns `intent: "choose"`, `index`, `confirm_required: true`; the glasses send `select` with that row and open the tap-to-confirm dialog naming the flight. If Ollama can't answer, a keyword match (airline, flight number, position, cheapest, hour) is used and `reason` says `ollama failed: ...` |
 | `booking_offer` | `approve` → tap to confirm · `other_option` → `swipe_down` | "book it" asks for a tap; "another one" / "no" shows the other option |
 | `only_option` | `approve` → tap to confirm | |
 | `fee_request` | `approve` → tap to confirm · `reject` → `swipe_down` | "no" declines without a tap (it spends nothing) |
 | `claim_ready` | `approve` → `press` (submits the trip claim) · `reject` → `swipe_down` (keeps it for later) | Applied by voice: submitting a claim spends nothing |
+| `resolved`, `not_held`, `call_failed`, `claim_submitted`, `answer` | `dismiss` → `press` | "OK", "got it", "done", "back": closes it like the tap |
+| `calling`, `call_resumed` | `hide` · `show` → done on the glasses | The call view is the glasses' own: `/voice` returns the intent with `handled: true`, `reason: "local"`, and the engine changes nothing |
+
+Not voice on purpose: `ready` (starting the flow is tap-only, so nearby talk can't start it) and the glasses' local spend confirm step (paying is always a tap). The glasses show which screens take voice with a tag in the top-right corner ("○ Voice on" / "● Listening" / "Tap only").
 
 ## Rules
 

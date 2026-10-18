@@ -9,6 +9,9 @@
 //    `answer` screen. Never always-on: nearby talk must not trigger questions.
 //
 // - "Live" means audio chunks actually arrived; the audioControl boolean can lie in QR sideload.
+// - The voice tag (top-right, hud/screens.ts voiceTag) shows the mic state BEFORE the wearer speaks:
+//   "○ Voice on" as soon as a voice screen shows, "● Listening" the moment speech starts, "● Heard you"
+//   while it's being understood, "Voice off" if no audio arrives. Tap-only screens say "Tap only".
 // - One request in flight at a time; every result is gated by the screen generation, so a late answer
 //   never touches a newer screen.
 // - Taps keep working the whole time; voice is an extra path, never a trap.
@@ -17,8 +20,9 @@ import { HttpError, type Engine } from '../engine/client'
 import type { VoiceResult } from '../engine/types'
 import { canUseMic, onAudio, setMic } from '../glasses/bridge'
 import { currentGeneration, currentScreen, onScreenChange, patchScreen, showScreen, showScreenIfCurrent } from '../hud/controller'
-import { openConfirm, setAskHandlers } from '../hud/gestures'
-import { askScreen, VOICE_SCREENS, type HudScreen, type VoiceState } from '../hud/screens'
+import { chooseRow, openConfirm, setAskHandlers } from '../hud/gestures'
+import { toggleCallView } from '../hud/callView'
+import { askScreen, engineScreenId, takesVoice, type HudScreen, type VoiceState } from '../hud/screens'
 import { UtteranceDetector, wavBase64, type Utterance } from './detector'
 
 const VERIFY_MS = 2000 // audio chunks should arrive this soon after opening the mic
@@ -31,9 +35,11 @@ const ASK_ANSWER_WAIT_MS = 4000 // /ask returned but the answer screen didn't ar
 const ASK_TIMING = { endSilenceMs: 1200, maxMs: 10000 } // questions are longer and have pauses
 
 let live = false // real audio has arrived since the mic was opened
+let micDead = false // the mic was opened but no audio arrived: the tag says "Voice off"
 let inFlight = false
 
-const takesVoice = (s: HudScreen) => VOICE_SCREENS.has(s.id) && !s.confirm
+/** Mic state when nothing is happening: waiting for speech, or off if the mic never delivered audio. */
+const idleState = (): VoiceState => (micDead ? 'offline' : 'listening')
 
 function setVoice(gen: number, voice: VoiceState | undefined) {
   if (currentScreen().voice !== voice) patchScreen(gen, { voice })
@@ -41,22 +47,30 @@ function setVoice(gen: number, voice: VoiceState | undefined) {
 
 function flash(gen: number, state: VoiceState) {
   setVoice(gen, state)
-  setTimeout(() => setVoice(gen, live ? 'listening' : undefined), FLASH_MS)
+  setTimeout(() => setVoice(gen, idleState()), FLASH_MS)
 }
 
 // ---------- commands (POST /voice) ----------
 
 /** Apply a /voice answer to the screen it was spoken on (shared by the mic and the typed tester). */
-function applyResult(r: VoiceResult, screen: HudScreen, gen: number, ms: number) {
+function applyResult(engine: Engine, r: VoiceResult, screen: HudScreen, gen: number, ms: number) {
   log(
     `voice ${ms}ms: "${r.transcript}" → ${r.intent} (${r.via}, ${r.confidence.toFixed(2)})` +
+      `${r.index !== undefined && r.index !== null ? ` row ${r.index}` : ''}${r.model ? ` [${r.model}]` : ''}` +
       `${r.handled ? ' handled' : ''}${r.confirm_required ? ' → tap to confirm' : ''}${r.reason ? ` · ${r.reason}` : ''}`,
   )
   if (gen !== currentGeneration()) return // a newer screen is showing; the engine already moved on
-  if (r.confirm_required) {
+  if (r.reason === 'local' && (r.intent === 'hide' || r.intent === 'show')) {
+    // The call view is the glasses' own: "hide it" minimizes, "show it" restores (no-op if already so).
+    if ((r.intent === 'hide') !== Boolean(screen.mini)) toggleCallView()
+    return
+  }
+  if (r.confirm_required && r.intent === 'choose' && screen.list && typeof r.index === 'number') {
+    chooseRow(engine, r.index) // "the Alaska one": select it, then "Confirm with a tap" naming it
+  } else if (r.confirm_required) {
     openConfirm(screen)
   } else if (r.handled) {
-    setTimeout(() => setVoice(gen, live ? 'listening' : undefined), HANDLED_FALLBACK_MS)
+    setTimeout(() => setVoice(gen, idleState()), HANDLED_FALLBACK_MS)
   } else if (r.reason?.startsWith('stale screen')) {
     // the next hud.screen is on its way
   } else if (r.reason && /not configured|transcription failed|intent model failed/.test(r.reason)) {
@@ -73,8 +87,8 @@ async function send(engine: Engine, body: { audio?: string; transcript?: string 
   inFlight = true
   setVoice(gen, 'thinking')
   try {
-    const r = await engine.voice({ screen_id: screen.id, format: 'wav', ...body })
-    applyResult(r, screen, gen, Math.round(performance.now() - startedAt))
+    const r = await engine.voice({ screen_id: engineScreenId(screen), format: 'wav', ...body })
+    applyResult(engine, r, screen, gen, Math.round(performance.now() - startedAt))
   } catch (err) {
     log(`POST /voice failed: ${(err as Error).message}`)
     if (gen === currentGeneration()) flash(gen, 'offline')
@@ -219,7 +233,16 @@ export function startVoice(engine: Engine): () => void {
       log(`voice: utterance ${u.ms}ms`)
       void send(engine, { audio: wavBase64(u.pcm) }, u.endedAt)
     },
-    () => log('voice: speech started'),
+    () => {
+      log('voice: speech started')
+      // Show it while they talk, not after: the wearer sees they're being heard.
+      if (takesVoice(currentScreen()) && !inFlight) setVoice(currentGeneration(), 'hearing')
+    },
+    {},
+    () => {
+      // Too short to be a command (a cough, a click): back to waiting.
+      if (currentScreen().voice === 'hearing') setVoice(currentGeneration(), idleState())
+    },
   )
 
   const askDetector = new UtteranceDetector(
@@ -247,12 +270,19 @@ export function startVoice(engine: Engine): () => void {
   async function open() {
     wantMic = true
     live = false
+    micDead = false
     chunks = 0
     detector.reset()
+    // Say "Voice on" right away; waiting for the first audio chunk made it look like voice wasn't there.
+    if (takesVoice(currentScreen())) setVoice(currentGeneration(), 'listening')
     const said = await setMic(true)
     if (verifyTimer) clearTimeout(verifyTimer)
     verifyTimer = setTimeout(() => {
-      if (wantMic && chunks === 0) log(`voice: no audio ${VERIFY_MS}ms after opening the mic (audioControl said ${said})`)
+      if (wantMic && chunks === 0) {
+        log(`voice: no audio ${VERIFY_MS}ms after opening the mic (audioControl said ${said})`)
+        micDead = true
+        if (takesVoice(currentScreen())) setVoice(currentGeneration(), 'offline')
+      }
     }, VERIFY_MS)
   }
 
@@ -281,7 +311,10 @@ export function startVoice(engine: Engine): () => void {
     if (!live) {
       live = true
       log('voice: mic live')
-      if (takesVoice(currentScreen())) setVoice(currentGeneration(), 'listening')
+      if (micDead) {
+        micDead = false // late audio: the mic works after all
+        if (takesVoice(currentScreen())) setVoice(currentGeneration(), 'listening')
+      }
     }
     if (asking) askDetector.push(pcm, role)
     else if (takesVoice(currentScreen()) && !inFlight) detector.push(pcm, role)
@@ -297,7 +330,7 @@ export function startVoice(engine: Engine): () => void {
     }
     if (takesVoice(screen)) {
       if (!wantMic) void open()
-      else if (live) setVoice(gen, 'listening')
+      else setVoice(gen, idleState())
     } else if (!screen.confirm) {
       close() // keep the mic through the confirm step; close it everywhere else
     }

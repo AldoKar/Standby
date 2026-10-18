@@ -6,7 +6,7 @@
 import { log } from '../debug/logger'
 import { imageLatencyMs, isRenderIdle, renderPlan } from '../glasses/bridge'
 import { animationFor, SLOW_IMAGE_MS, type Animation } from './animations'
-import { onDestinationArtReady } from './images'
+import { onDestinationArtReady, onLogoReady } from './images'
 import { planScreen, type PagePlan } from './layout'
 import { blankScreen, type HudScreen } from './screens'
 
@@ -126,6 +126,11 @@ export function onScreenChange(fn: (screen: HudScreen, gen: number) => void): ()
     changeListeners.delete(fn)
   }
 }
+
+// The home screen may have appeared before the logo loaded: draw it in.
+onLogoReady(() => {
+  if (current.home) render()
+})
 
 // The flight list may be showing the drawn bridge if it appeared before the photo loaded: swap it in.
 onDestinationArtReady(() => {

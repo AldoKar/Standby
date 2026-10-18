@@ -18,7 +18,8 @@ let minimized = false
 export const isCallScreen = (s: HudScreen) => CALL_SCREENS.has(s.id)
 
 export function minimizedScreen(of: HudScreen): HudScreen {
-  return { id: `mini:${of.id}`, header: '', lines: [], icon: 'phone', gestures: {}, mini: { of } }
+  // The call screen comes back without a stale voice state ("Heard you" from the "hide it" that minimized it).
+  return { id: `mini:${of.id}`, header: '', lines: [], icon: 'phone', gestures: {}, mini: { of: { ...of, voice: undefined } } }
 }
 
 /** Every engine hud.screen goes through here, so a minimized call stays minimized. */

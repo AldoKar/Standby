@@ -273,9 +273,30 @@ def test_voice_commands(c):
     assert r["intent"] == "fix" and r["via"] == "keywords" and r["handled"] and r["stage"] == "offer"
     # approving a spend by voice never books: it asks for a tap
     r = say("okay", "flight_list")
-    assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
+    assert r["intent"] == "choose" and r["index"] == 0 and r["confirm_required"] and not r["handled"]
     assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
-    # the glasses' native list owns the selection: "another one" is not a command there (scroll instead)
+    # picking a flight by voice: Ollama names the row, the engine changes nothing, a tap still books
+    import asyncio
+    from app import voice
+    real_row, asked = voice._ollama_row, []
+
+    async def fake_row(transcript, choices, highlighted):
+        asked.append((transcript, [o["airline"] for o in choices], highlighted))
+        return (1, 0.95) if "alaska" in transcript.lower() else (-1, 0.9)
+    voice._ollama_row = fake_row
+    try:
+        r = say("let's do the Alaska one", "flight_list")
+        assert r["intent"] == "choose" and r["index"] == 1 and r["confirm_required"] and r["model"].startswith("ollama/")
+        assert asked[-1] == ("let's do the Alaska one", ["Delta", "Alaska", "Southwest"], 0), asked
+        assert say("what's the weather like", "flight_list")["intent"] == "unknown"
+        assert c.get("/state").json()["pick"]["airline"] == "Delta"  # nothing moved, nothing booked
+    finally:
+        voice._ollama_row = real_row
+    # Ollama down (no server in tests): a plain keyword match keeps it working, and says Ollama failed
+    r = say("book the Alaska flight", "flight_list")
+    assert r["intent"] == "choose" and r["index"] == 1 and "ollama failed" in r["reason"], r
+    assert say("the cheapest one", "flight_list")["index"] == 0
+    assert say("the ten o'clock", "flight_list")["index"] == 2
     assert say("show me another one", "flight_list")["intent"] == "unknown"
     c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 1})
     s = c.get("/state").json()
@@ -290,9 +311,29 @@ def test_voice_commands(c):
     assert r["intent"] == "reject" and r["handled"]
     wait_for(c, "resolved")
     assert c.get("/ledger").json()["spent_usd"] == 239
-    # no audio and no transcript
+    # end screens close by voice, the call view hides / shows on the glasses (engine only reports it)
+    for screen in ("resolved", "not_held", "call_failed", "claim_submitted", "answer"):
+        assert asyncio.run(voice.classify("got it", screen, []))[:3] == ("dismiss", 1.0, "keywords"), screen
+    assert asyncio.run(voice.classify("hide it", "calling", []))[0] == "hide" and voice.is_local("calling", "hide")
+    assert asyncio.run(voice.classify("show the call", "call_resumed", []))[0] == "show"
+    assert not voice.is_local("fee_request", "approve")
+    # starting the flow is tap-only: no voice on `ready`, even "start"
     c.post("/demo/reset")
+    assert say("start", "ready")["reason"] == "no voice commands on ready"
+    assert c.get("/state").json()["stage"] == "ready"
+    # no audio and no transcript
     assert c.post("/voice", json={"screen_id": "ready"}).json()["reason"] == "no voice commands on ready"
+    # "OK" on the outcome screen closes it like a tap (back to Ready)
+    c.post("/input", json={"gesture": "press"})
+    c.post("/voice", json={"screen_id": "cancelled", "transcript": "yes"})
+    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"})
+    wait_for(c, "fee")
+    say("no", "fee_request")
+    wait_for(c, "resolved")
+    screen = c.get("/state").json()["screen"]["screen_id"]
+    if screen in ("resolved", "not_held"):  # the claim screen may already have replaced it
+        r = say("ok thanks", screen)
+        assert r["intent"] == "dismiss" and r["handled"], r
     c.post("/demo/reset")
 
 
@@ -341,8 +382,9 @@ def test_voice_model_fallback(c):
         c.post("/demo/reset")
         c.post("/input", json={"gesture": "press"})
         c.post("/input", json={"gesture": "press"})
+        # (the flight list asks Ollama, not Jev/Haiku: with Ollama down and no flight named, it says so)
         reply = c.post("/voice", json={"screen_id": "flight_list", "transcript": phrase}).json()
-        assert reply["intent"] == "unknown" and reply["reason"].startswith("intent model failed")
+        assert reply["intent"] == "unknown" and reply["reason"].startswith("ollama failed")
         # 5. The keyword path still answers instantly, no model at all
         calls.clear()
         assert asyncio.run(voice.classify("okay", "booking_offer", lines))[:3] == ("approve", 1.0, "keywords")
