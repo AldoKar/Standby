@@ -8,9 +8,22 @@
 | Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
 | Caller | `standby-caller` | `agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07` | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
 
-Shared asi1.ai chat URL: `https://asi1.ai/chat/6207e90a-0ea7-4d71-bbfd-8415b2171162`
-_(working run, 2026-10-17 21:39 — **share it from the chat menu before submitting**, the
-link above is private until you do)_
+Shared asi1.ai chat URL (opens logged out, verified):
+**https://asi1.ai/shared-chat/ab2f568d-d49e-4ec4-a279-5bb77195afbd**
+
+That one chat evidences every Fetch requirement: discovery and use through ASI:One, the
+whole flow in one conversation, and the Caller hired and paid over the Agent Payment
+Protocol.
+
+### A rendering quirk worth knowing
+
+The agent sends the booking confirmation and the call outcome as two separate
+`ChatMessage`s, about six seconds apart. asi1.ai renders this inconsistently: sometimes
+two bubbles (21:39 run), sometimes merged into one **and reordered**, with the outcome
+printed above the booking (23:04 run, visible in the shared chat above). Nothing to fix on
+our side — both messages are sent correctly and in order, verified over the wire with
+`chat_local.py`. Don't stop and retry on stage if the booking message appears to be
+missing; it is in the bubble, further down.
 
 ## Versions
 
