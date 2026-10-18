@@ -1,24 +1,34 @@
-// Voice commands: glasses mic → utterance → POST /voice → same flow as a gesture.
+// Voice on the glasses mic. Two uses, one mic:
 //
-// - The mic is open only on screens that take voice commands (VOICE_SCREENS), and stays open through the
-//   local confirm step so swiping back doesn't toggle it. Closed everywhere else, and on foreground exit.
+// 1. Commands: utterance → POST /voice → same flow as a gesture.
+//    - The mic is open only on screens that take voice commands (VOICE_SCREENS), and stays open through the
+//      local confirm step so swiping back doesn't toggle it. Closed everywhere else, and on foreground exit.
+//    - A spend approval by voice never goes to the engine: it opens "Tap again to confirm" (product rule).
+// 2. Free questions (free mode, before Start): push-to-talk. A long press where the engine offers
+//    `hold: "ask"` opens the mic for ONE question (any language) → POST /ask → the engine pushes the
+//    `answer` screen. Never always-on: nearby talk must not trigger questions.
+//
 // - "Live" means audio chunks actually arrived; the audioControl boolean can lie in QR sideload.
-// - One utterance in flight at a time; every result is gated by the screen generation, so a late answer
+// - One request in flight at a time; every result is gated by the screen generation, so a late answer
 //   never touches a newer screen.
-// - A spend approval by voice never goes to the engine: it opens "Tap again to confirm" (product rule).
 // - Taps keep working the whole time; voice is an extra path, never a trap.
 import { log } from '../debug/logger'
-import type { Engine } from '../engine/client'
+import { HttpError, type Engine } from '../engine/client'
 import type { VoiceResult } from '../engine/types'
 import { canUseMic, onAudio, setMic } from '../glasses/bridge'
-import { currentGeneration, currentScreen, onScreenChange, patchScreen } from '../hud/controller'
-import { openConfirm } from '../hud/gestures'
-import { VOICE_SCREENS, type HudScreen, type VoiceState } from '../hud/screens'
+import { currentGeneration, currentScreen, onScreenChange, patchScreen, showScreen, showScreenIfCurrent } from '../hud/controller'
+import { openConfirm, setAskHandlers } from '../hud/gestures'
+import { askScreen, VOICE_SCREENS, type HudScreen, type VoiceState } from '../hud/screens'
 import { UtteranceDetector, wavBase64, type Utterance } from './detector'
 
 const VERIFY_MS = 2000 // audio chunks should arrive this soon after opening the mic
 const FLASH_MS = 2500 // how long "didn't catch that" / "voice off" stays in the header
 const HANDLED_FALLBACK_MS = 4000 // if the engine handled it but no new screen came, drop "heard you"
+
+const ASK_NO_SPEECH_MS = 7000 // push-to-talk with no question → back
+const ASK_FAILED_MS = 2500 // how long a failure stays before going back
+const ASK_ANSWER_WAIT_MS = 4000 // /ask returned but the answer screen didn't arrive over SSE → back
+const ASK_TIMING = { endSilenceMs: 1200, maxMs: 10000 } // questions are longer and have pauses
 
 let live = false // real audio has arrived since the mic was opened
 let inFlight = false
@@ -33,6 +43,8 @@ function flash(gen: number, state: VoiceState) {
   setVoice(gen, state)
   setTimeout(() => setVoice(gen, live ? 'listening' : undefined), FLASH_MS)
 }
+
+// ---------- commands (POST /voice) ----------
 
 /** Apply a /voice answer to the screen it was spoken on (shared by the mic and the typed tester). */
 function applyResult(r: VoiceResult, screen: HudScreen, gen: number, ms: number) {
@@ -71,14 +83,112 @@ async function send(engine: Engine, body: { audio?: string; transcript?: string 
   }
 }
 
-/** Typed command for the current screen (developer tools / browser without a mic). */
+// ---------- free questions (POST /ask, push-to-talk) ----------
+
+let askTimer: ReturnType<typeof setTimeout> | null = null
+// Set while startVoice runs: opens/closes the mic for one question.
+let askMic: ((on: boolean) => void) | null = null
+
+function clearAskTimer() {
+  if (askTimer) clearTimeout(askTimer)
+  askTimer = null
+}
+
+/** The engine screen behind the current one (a push-to-talk step goes back to it). */
+function askOrigin(): HudScreen {
+  const s = currentScreen()
+  return s.ask ? s.ask.of : { ...s, voice: undefined }
+}
+
+const freeMode = (s: HudScreen) => s.gestures.hold === 'ask' || Boolean(s.ask)
+
+function askFailed(of: HudScreen, why: string) {
+  clearAskTimer()
+  const gen = showScreen(askScreen(of, 'failed', why))
+  askTimer = setTimeout(() => showScreenIfCurrent(gen, of), ASK_FAILED_MS)
+}
+
+function failureText(err: unknown): string {
+  if (err instanceof HttpError) {
+    if (err.status === 422) return "Didn't catch that"
+    if (err.status === 503) return 'Questions are off'
+    if (err.status === 413) return 'Too long, try again'
+  }
+  return "Couldn't answer"
+}
+
+/** Long press in free mode: open the mic for one question. */
+function beginAsk(engine: Engine) {
+  if (inFlight) return
+  const of = askOrigin()
+  clearAskTimer()
+  if (!askMic) {
+    log('ask: no glasses mic here; type the question in the voice tester')
+    askFailed(of, 'Mic not connected')
+    return
+  }
+  askEngine = engine
+  const gen = showScreen(askScreen(of, 'listening'))
+  askMic(true)
+  askTimer = setTimeout(() => {
+    if (gen !== currentGeneration()) return
+    log('ask: no question heard')
+    askMic?.(false)
+    askFailed(of, "Didn't hear a question")
+  }, ASK_NO_SPEECH_MS)
+}
+let askEngine: Engine | null = null
+
+/** Tap on a push-to-talk step: back to where the wearer was. */
+function cancelAsk() {
+  clearAskTimer()
+  askMic?.(false)
+  const s = currentScreen()
+  if (s.ask) {
+    log('ask: cancelled')
+    showScreen(s.ask.of)
+  }
+}
+
+async function submitAsk(engine: Engine, body: { audio?: string; question?: string }, startedAt: number) {
+  if (inFlight) return
+  const of = askOrigin()
+  clearAskTimer()
+  askMic?.(false)
+  inFlight = true
+  const gen = showScreen(askScreen(of, 'thinking'))
+  try {
+    const r = await engine.ask({ format: 'wav', ...body })
+    log(
+      `ask ${Math.round(performance.now() - startedAt)}ms: "${r.question}" → ${r.glasses.join(' / ')}` +
+        `${r.shown ? '' : ' (not shown: a spend is waiting)'}`,
+    )
+    // The answer screen comes over SSE (usually before this response). If it doesn't, go back.
+    if (gen === currentGeneration()) askTimer = setTimeout(() => showScreenIfCurrent(gen, of), r.shown ? ASK_ANSWER_WAIT_MS : 0)
+  } catch (err) {
+    log(`POST /ask failed: ${(err as Error).message}`)
+    if (gen === currentGeneration()) askFailed(of, failureText(err))
+  } finally {
+    inFlight = false
+  }
+}
+
+setAskHandlers({ start: beginAsk, cancel: cancelAsk })
+
+/** Typed text (developer tools / browser without a mic): a question in free mode, else a command. */
 export function sayText(engine: Engine, text: string): void {
+  if (freeMode(currentScreen())) {
+    void submitAsk(engine, { question: text }, performance.now())
+    return
+  }
   if (!takesVoice(currentScreen())) {
     log(`voice: no commands on ${currentScreen().id}`)
     return
   }
   void send(engine, { transcript: text }, performance.now())
 }
+
+// ---------- the mic ----------
 
 /** Start listening on the glasses mic. Call once the bridge is connected. Returns a stop function. */
 export function startVoice(engine: Engine): () => void {
@@ -89,6 +199,7 @@ export function startVoice(engine: Engine): () => void {
   let wantMic = false
   let chunks = 0
   let verifyTimer: ReturnType<typeof setTimeout> | null = null
+  let asking = false // the mic is open for one free question
 
   const detector = new UtteranceDetector(
     (u: Utterance) => {
@@ -96,6 +207,28 @@ export function startVoice(engine: Engine): () => void {
       void send(engine, { audio: wavBase64(u.pcm) }, u.endedAt)
     },
     () => log('voice: speech started'),
+  )
+
+  const askDetector = new UtteranceDetector(
+    (u: Utterance) => {
+      if (!asking || currentScreen().ask?.phase !== 'listening') return
+      log(`ask: question ${u.ms}ms`)
+      void submitAsk(askEngine ?? engine, { audio: wavBase64(u.pcm) }, u.endedAt)
+    },
+    () => {
+      log('ask: speech started')
+      // They're talking: no "didn't hear a question". A cough the detector drops ends no utterance,
+      // so keep a backstop past the longest question.
+      clearAskTimer()
+      const gen = currentGeneration()
+      const of = askOrigin()
+      askTimer = setTimeout(() => {
+        if (gen !== currentGeneration()) return
+        askMic?.(false)
+        askFailed(of, "Didn't catch that")
+      }, ASK_TIMING.maxMs + 2000)
+    },
+    ASK_TIMING,
   )
 
   async function open() {
@@ -119,6 +252,16 @@ export function startVoice(engine: Engine): () => void {
     void setMic(false)
   }
 
+  askMic = (on: boolean) => {
+    asking = on
+    askDetector.reset()
+    if (on) {
+      if (!wantMic) void open()
+    } else if (!takesVoice(currentScreen())) {
+      close()
+    }
+  }
+
   const offAudio = onAudio((pcm, role) => {
     if (!wantMic) return
     chunks++
@@ -127,11 +270,18 @@ export function startVoice(engine: Engine): () => void {
       log('voice: mic live')
       if (takesVoice(currentScreen())) setVoice(currentGeneration(), 'listening')
     }
-    if (takesVoice(currentScreen()) && !inFlight) detector.push(pcm, role)
+    if (asking) askDetector.push(pcm, role)
+    else if (takesVoice(currentScreen()) && !inFlight) detector.push(pcm, role)
   })
 
   const offScreen = onScreenChange((screen, gen) => {
     detector.reset() // never carry half a phrase from one screen to the next
+    if (screen.ask) return // push-to-talk manages the mic itself
+    if (asking) {
+      // An engine screen replaced the push-to-talk step (e.g. the answer): the question is over.
+      asking = false
+      askDetector.reset()
+    }
     if (takesVoice(screen)) {
       if (!wantMic) void open()
       else if (live) setVoice(gen, 'listening')
@@ -144,6 +294,7 @@ export function startVoice(engine: Engine): () => void {
   if (takesVoice(currentScreen())) void open()
 
   return () => {
+    askMic = null
     offAudio()
     offScreen()
     close()

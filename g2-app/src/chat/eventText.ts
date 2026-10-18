@@ -80,6 +80,13 @@ export function eventToChat(e: EngineEvent): ChatLine | null {
             ? `🎙 "${e.data.transcript || '…'}" (not a command here)`
             : `🎙 "${e.data.transcript}"`,
       }
+    case 'agent.answer':
+      return { role: 'agent', text: `🎙 "${e.data.question}" · ${e.data.answer}` }
+    case 'trip.updated':
+      return {
+        role: 'system',
+        text: `Your flight: ${e.data.airline} ${e.data.flight} ${e.data.route}, ${formatTime(e.data.departs)} (live from FlightAware). Hold on the glasses to ask about it.`,
+      }
     case 'demo.reset':
     case 'state.snapshot':
     case 'hud.screen':

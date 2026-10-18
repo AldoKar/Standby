@@ -20,6 +20,8 @@ from typing import Awaitable, Callable
 import anthropic
 
 MODEL = "claude-opus-5-5"
+# Free questions (POST /ask) are read-only and need to feel instant on the glasses: a small, fast model.
+ASK_MODEL = os.getenv("ASK_MODEL", "claude-haiku-4-5")
 MAX_TURNS = 8
 TIMEOUT_S = 90
 
@@ -92,7 +94,12 @@ FLIGHT_STATUS = {"name": "check_flight_status",
 PHASES["plan"]["tools"][0] = FLIGHT_STATUS
 PHASES["plan"]["tools"][2] = READ_VAULT
 PHASES["ask"] = {
-    "goal": "Answer the traveler's question in <facts>.question, using the tools for facts. You can only read: "
+    "goal": "Answer the traveler's question in <facts>.question, using the tools for facts. 'My flight' means "
+            "<facts>.travelers_flight; if <facts>.travelers_flight_live_status is there it is fresh, so answer "
+            "questions about their flight from it right away, with no tool call. <facts>.vault is their saved "
+            "documents already, so don't call read_vault. A question that names a different "
+            "flight number (e.g. UA1 is not UA1372) is about that flight: look it up with check_flight_status and "
+            "never answer it with the traveler's flight. You can only read: "
             "you can't book, pay, cancel or call. If they ask for that, say what you'd do and that they confirm on "
             "the glasses. Answer in the question's language. 'answer' is 1-3 plain sentences for their phone. "
             "'glasses' is 1-3 lines of at most 24 characters each, the key facts only (e.g. 'DL1946 on time', "
@@ -117,23 +124,30 @@ def enabled() -> bool:
     return os.getenv("AGENT_MODE", "off") == "claude" and bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-async def run(phase: str, facts: dict, tools: dict[str, Tool], on_step: Callable[[dict], Awaitable[None]]) -> str:
+def can_ask() -> bool:
+    """Free questions only read, so they work with or without AGENT_MODE (free mode before Start)."""
+    return bool(os.getenv("ANTHROPIC_API_KEY"))
+
+
+async def run(phase: str, facts: dict, tools: dict[str, Tool], on_step: Callable[[dict], Awaitable[None]],
+              model: str | None = None) -> str:
     """Run one phase to completion. Returns Claude's closing sentence; raises on API errors or timeouts."""
-    return await asyncio.wait_for(_loop(phase, facts, tools, on_step), TIMEOUT_S)
+    return await asyncio.wait_for(_loop(phase, facts, tools, on_step, model or MODEL), TIMEOUT_S)
 
 
-async def _loop(phase: str, facts: dict, tools: dict[str, Tool], on_step) -> str:
+async def _loop(phase: str, facts: dict, tools: dict[str, Tool], on_step, model: str) -> str:
     global _client
     _client = _client or anthropic.AsyncAnthropic()
     spec = PHASES[phase]
     messages = [{"role": "user", "content": f"<goal>{spec['goal']}</goal>\n<facts>\n{json.dumps(facts, indent=1)}\n</facts>"}]
-    output_config = {"effort": "low"}
+    output_config = {} if "haiku" in model else {"effort": "low"}  # effort isn't a Haiku setting
     if "schema" in spec:
         output_config["format"] = {"type": "json_schema", "schema": spec["schema"]}
     for _ in range(MAX_TURNS):
         response = await _client.beta.messages.create(
-            model=MODEL, max_tokens=8000, system=SYSTEM, tools=spec["tools"], messages=messages,
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default", output_config=output_config,
+            model=model, max_tokens=8000, system=SYSTEM, tools=spec["tools"], messages=messages,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            **({"output_config": output_config} if output_config else {}),
         )
         if response.stop_reason not in ("tool_use", "end_turn"):
             raise RuntimeError(f"agent stopped: {response.stop_reason}")

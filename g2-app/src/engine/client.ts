@@ -2,12 +2,13 @@
 // The engine replays state.snapshot + the current hud.screen on every (re)connect, so a dropped
 // connection redraws by itself. EventSource reconnects automatically.
 import { log } from '../debug/logger'
-import type { EngineEvent, Gesture, InputResult, Ledger, TestsResult, VoiceResult } from './types'
+import type { AskResult, EngineEvent, Gesture, InputResult, Ledger, TestsResult, VoiceResult } from './types'
 
 export type EngineStatus = 'connecting' | 'live' | 'offline'
 
 const POST_TIMEOUT_MS = 5000
 const VOICE_TIMEOUT_MS = 12000 // speech-to-text + intent; the engine itself gives up after ~13 s worst case
+const ASK_TIMEOUT_MS = 20000 // speech-to-text + Haiku with tools: usually 2-5 s
 
 /**
  * Engine base URL, in order: `?api=https://host`, VITE_ENGINE_URL, or the same host on :8000
@@ -56,6 +57,15 @@ export function connectEngine(
   return () => es.close()
 }
 
+/** A non-2xx answer from the engine; `status` lets callers tell "didn't catch that" (422) from "off" (503). */
+export class HttpError extends Error {
+  readonly status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function post<T>(baseUrl: string, path: string, body: unknown, timeoutMs = POST_TIMEOUT_MS): Promise<T> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -66,7 +76,13 @@ async function post<T>(baseUrl: string, path: string, body: unknown, timeoutMs =
       body: JSON.stringify(body ?? {}),
       signal: ctrl.signal,
     })
-    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`)
+    if (!res.ok) {
+      const detail = await res
+        .json()
+        .then((b: { detail?: unknown }) => (typeof b.detail === 'string' ? `: ${b.detail}` : ''))
+        .catch(() => '')
+      throw new HttpError(res.status, `${path} → HTTP ${res.status}${detail}`)
+    }
     return (await res.json()) as T
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw new Error(`${path} timed out after ${timeoutMs}ms`)
@@ -102,6 +118,9 @@ export function createEngine(baseUrl: string) {
     /** POST /voice: a WAV utterance (base64) or a typed transcript, for the given screen. */
     voice: (body: { screen_id: string; audio?: string; format?: 'wav'; transcript?: string }) =>
       post<VoiceResult>(baseUrl, '/voice', body, VOICE_TIMEOUT_MS),
+    /** POST /ask: a free question, as push-to-talk audio (any language) or typed text. */
+    ask: (body: { audio?: string; format?: 'wav'; question?: string }) =>
+      post<AskResult>(baseUrl, '/ask', body, ASK_TIMEOUT_MS),
     /** POST /simulate/cancel (dashboard backup for "Tap to start"). */
     simulateCancel: () => post<{ handled: boolean }>(baseUrl, '/simulate/cancel', {}),
     /** POST /demo/reset */

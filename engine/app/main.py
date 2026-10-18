@@ -35,6 +35,16 @@ HEARTBEAT_S = 15
 MOCK_CLERK_DELAY_S = float(os.getenv("MOCK_CLERK_DELAY_S", "4"))  # clerk asks for the fee
 MOCK_CALL_END_S = float(os.getenv("MOCK_CALL_END_S", "2"))  # call wraps up after the answer
 
+# Free mode: the traveler's own flight is a real one (FlightAware), so questions about it get live answers;
+# Start then "cancels" that same flight and the usual flow runs. auto = next real LAX->SFO nonstop
+# (United first); a flight number pins one (it should fly LAX->SFO); off = the mock UA183.
+LIVE_FLIGHT = os.getenv("LIVE_FLIGHT", "auto").strip()
+LIVE_REFRESH_S = 30 * 60  # look again after a reset if the last lookup is older (the flight may have left)
+AIRLINES = {"UA": "United", "AA": "American", "DL": "Delta", "AS": "Alaska", "WN": "Southwest", "B6": "JetBlue",
+            "F9": "Frontier", "NK": "Spirit", "HA": "Hawaiian", "OO": "SkyWest", "QX": "Horizon"}
+TRIP: dict = {"booking": None, "fetched": 0.0, "error": None}  # survives demo resets
+BACKGROUND: set[asyncio.Task] = set()  # not cancelled by S.reset()
+
 app = FastAPI(title="Handle It engine")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -68,9 +78,14 @@ class State:
         self.before_answer: dict | None = None  # the screen an /ask answer covered
 
 
+def booking() -> dict:
+    """The traveler's booked flight: the live one found for free mode, else the mock UA183."""
+    return TRIP["booking"] or MOCK["booking"]
+
+
 def seed_vault() -> list[dict]:
     """What the traveler saved before the trip (pre-seeded, per the SPEC). The flow adds to it."""
-    b, lodging = MOCK["booking"], MOCK["lodging"]
+    b, lodging = booking(), MOCK["lodging"]
     return [
         {"id": "vlt-ua183", "type": "boarding_pass", "title": f"{b['airline']} {b['flight']} {b['from']}-{b['to']}",
          "saved_at": None, "source": "traveler",
@@ -91,7 +106,53 @@ async def save_to_vault(type_: str, title: str, data: dict) -> dict:
 
 
 def ready_screen() -> dict:
+    """Free mode. With Claude available, a long press is push-to-talk for a free question (the glasses
+    record it and send it to POST /ask); a tap starts the disruption flow as always."""
+    if agent.can_ask():
+        return {"screen_id": "ready", "lines": ["Ready", "Tap = start, Hold = ask"],
+                "gestures": {"press": "start", "hold": "ask"}, "clear_after_s": None}
     return {"screen_id": "ready", "lines": ["Ready", "Tap to start"], "gestures": {"press": "start"}, "clear_after_s": None}
+
+
+async def show_ready() -> None:
+    S.screen = ready_screen()
+    await publish("hud.screen", S.screen)
+
+
+async def load_live_flight(force: bool = False) -> None:
+    """Find the real flight for free mode. Any failure keeps the current (or mock) flight."""
+    if LIVE_FLIGHT.lower() == "off" or not status.enabled():
+        return
+    if not force and TRIP["booking"] and asyncio.get_running_loop().time() - TRIP["fetched"] < LIVE_REFRESH_S:
+        return
+    b = MOCK["booking"]
+    try:
+        f = await (status.next_departure(b["from"], b["to"]) if LIVE_FLIGHT.lower() == "auto"
+                   else status.fetch(LIVE_FLIGHT))
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        TRIP["error"] = f"flightaware: {e}"[:200]
+        return
+    departs = (f or {}).get("scheduled_departure") or ""
+    if not f or not f.get("flight") or not re.fullmatch(r"\d{2}:\d{2}", departs):
+        TRIP["error"] = f"no live flight found ({(f or {}).get('status', 'nothing scheduled')})"
+        return
+    if S.task_id is not None:  # never swap the flight under a running task; the next reset picks it up
+        return
+    code = f.get("airline") or ""
+    TRIP.update(booking={**b, "airline": AIRLINES.get(code, code or b["airline"]), "flight": f["flight"],
+                         "departs": departs, "date": f.get("date") or b["date"], "live": True,
+                         "fa_flight_id": f.get("fa_flight_id")},
+                fetched=asyncio.get_running_loop().time(), error=None)
+    S.vault = [seed_vault()[0], *S.vault[1:]]
+    t = TRIP["booking"]
+    await publish("trip.updated", {"airline": t["airline"], "flight": t["flight"], "route": f"{t['from']}-{t['to']}",
+                                   "date": t["date"], "departs": t["departs"], "source": "flightaware"})
+
+
+def refresh_live_flight(force: bool = False) -> None:
+    job = asyncio.create_task(load_live_flight(force))
+    BACKGROUND.add(job)
+    job.add_done_callback(BACKGROUND.discard)
 
 
 S = State()
@@ -143,6 +204,7 @@ def snapshot() -> dict:
         "vault": S.vault,
         "agent": S.agent_log,
         "call_mode": CALL_MODE,
+        "trip": {**booking(), "live": bool(booking().get("live")), "error": TRIP["error"]},
     }
 
 
@@ -151,7 +213,7 @@ def snapshot() -> dict:
 async def start_flow(source: str) -> None:
     S.task_id = f"task-{uuid.uuid4().hex[:8]}"
     S.stage = "searching"
-    b, offer = MOCK["booking"], MOCK["airline_offer"]
+    b, offer = booking(), MOCK["airline_offer"]
     await publish("flight.cancelled", {"flight": b["flight"], "route": f"{b['from']}-{b['to']}",
                                        "airline_offer": offer, "source": source})
     await show("searching", [f"{b['flight']} cancelled", "Finding flights..."])
@@ -210,9 +272,33 @@ async def run_agent(phase: str, facts: dict, tools: dict) -> bool:
     return True
 
 
+TRIP_STATUS_TTL_S = 60  # one AeroAPI lookup per minute at most for the traveler's own flight
+_trip_status: dict = {"at": -1e9, "data": None}
+
+
+async def trip_live_status() -> dict:
+    """Live status of the traveler's own (real) flight, pinned to the exact leg found for free mode."""
+    b, loop = booking(), asyncio.get_running_loop()
+    cached = _trip_status["data"]
+    if cached and cached.get("flight") == b["flight"] and loop.time() - _trip_status["at"] < TRIP_STATUS_TTL_S:
+        return cached
+    try:
+        live = await status.fetch(b["flight"], b.get("fa_flight_id"))
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        return {"flight": b["flight"], "airline": b["airline"], "route": f"{b['from']}-{b['to']}", "date": b["date"],
+                "status": "scheduled", "scheduled_departure": b["departs"], "source": "trip",
+                "live_error": str(e)[:200]}
+    data = {**{k: v for k, v in live.items() if k != "fa_flight_id"}, "note": "the traveler's own booked flight"}
+    _trip_status.update(at=loop.time(), data=data)
+    return data
+
+
 async def flight_status(flight: str) -> dict:
-    """The trip's own flights (demo data) answer from the trip; any other flight is live from FlightAware."""
-    f, b = flight.replace(" ", "").upper(), MOCK["booking"]
+    """The trip's own flights answer from the trip; any other flight is live from FlightAware. In free mode
+    (before Start) the traveler's flight is a real one, so it's live too; once the flow starts it's "cancelled"."""
+    f, b = flight.replace(" ", "").upper(), booking()
+    if f == b["flight"] and b.get("live") and S.task_id is None and status.enabled():
+        return await trip_live_status()
     if f == b["flight"]:
         cancelled = S.task_id is not None
         return {"flight": f, "airline": b["airline"], "route": f"{b['from']}-{b['to']}", "date": b["date"],
@@ -380,7 +466,7 @@ async def after_booking() -> None:
     await publish("offer.declined", {"airline": offer["airline"], "flight": offer["flight"],
                                      "refund_usd": refund["amount_usd"], "status": "pending"})
     paid = next((s for s in reversed(S.ledger.spends) if s["kind"] == "booking"), {})
-    b = MOCK["booking"]
+    b = booking()
     order = await book_pick(p)
     await publish("flight.booked", {"airline": p["airline"], "flight": p["flight"], **order})
     await save_to_vault("boarding_pass", f"{p['airline']} {p['flight']} {b['from']}-{b['to']}", {
@@ -556,7 +642,8 @@ async def input_(g: Gesture):
     elif gesture == "press" and stage == "resolved":
         await show("idle", [], {})
         S.reset()
-        await show("ready", ["Ready", "Tap to start"], {"press": "start"})
+        await show_ready()
+        refresh_live_flight()
     elif gesture == "press" and stage == "cancelled":
         await offer_pick()
     elif stage in ("offer", "fee") and gesture in ("hold", "swipe_down"):
@@ -574,7 +661,9 @@ async def input_(g: Gesture):
 
 
 class Ask(BaseModel):
-    question: str
+    question: str = ""
+    audio: str | None = None  # base64 WAV from the glasses mic (push-to-talk); used when question is empty
+    format: str = "wav"
     show: bool = True  # put the short answer on the glasses
 
 
@@ -593,11 +682,20 @@ async def restore_screen(prev: dict, after_s: float = 0) -> None:
 async def ask(q: Ask):
     """A free question to the agent: flight status, vault, spending, what it's doing. Read-only tools:
     it never books, pays or calls. The short answer goes on the glasses unless a spend is waiting."""
+    if not agent.can_ask():
+        raise HTTPException(503, "needs ANTHROPIC_API_KEY")
     question = q.question.strip()[:500]
+    if not question and q.audio:
+        if len(q.audio) > voice.MAX_AUDIO_BYTES * 4 // 3:
+            raise HTTPException(413, "audio too long")
+        try:
+            question = (await voice.transcribe(q.audio, q.format, language=None))[:500]  # any language
+        except Exception as e:  # noqa: BLE001 - say why on the glasses instead of hanging
+            raise HTTPException(502, str(e)[:200])
+        if not question:
+            raise HTTPException(422, "didn't catch that")
     if not question:
         raise HTTPException(400, "empty question")
-    if not agent.enabled():
-        raise HTTPException(503, "needs AGENT_MODE=claude and ANTHROPIC_API_KEY")
 
     async def read_ledger(_: dict) -> dict:
         return S.ledger.view(S.mandate)
@@ -607,12 +705,20 @@ async def ask(q: Ask):
                 "glasses_show": S.screen["lines"]}
 
     first = len(S.agent_log)
+    b = booking()
     facts = {"question": question, "traveler": MOCK["traveler"]["name"],
-             "now": datetime.now(LA).isoformat(timespec="minutes")}
+             "now": datetime.now(LA).isoformat(timespec="minutes"),
+             "travelers_flight": {k: b[k] for k in ("airline", "flight", "from", "to", "date", "departs")},
+             "trip_state": "no disruption yet" if S.task_id is None else S.stage,
+             "vault": (await read_vault())["items"]}  # small; saves the tool round trip Claude always made
+    if b.get("live") and S.task_id is None and status.enabled():
+        # The usual question is about their own flight: hand Claude its live status up front (cached 60 s),
+        # which saves a whole tool round trip on the glasses.
+        facts["travelers_flight_live_status"] = await trip_live_status()
     try:
         out = json.loads(await agent.run("ask", facts, {
             "read_vault": read_vault, "check_flight_status": lambda i: flight_status(i["flight"]),
-            "read_ledger": read_ledger, "read_task": read_task}, agent_step))
+            "read_ledger": read_ledger, "read_task": read_task}, agent_step, model=agent.ASK_MODEL))
     except (anthropic.APIError, RuntimeError, TimeoutError, ValueError, KeyError) as e:
         await publish("agent.failed", {"phase": "ask", "error": str(e)[:300]})
         raise HTTPException(502, f"agent failed: {e}"[:300])
@@ -622,7 +728,8 @@ async def ask(q: Ask):
     if shown:
         prev = S.screen if S.screen["screen_id"] != "answer" else S.before_answer
         S.before_answer = prev
-        await show("answer", lines, {"press": "dismiss"}, ANSWER_S)
+        # In free mode a long press asks again (push-to-talk on the glasses).
+        await show("answer", lines, {"press": "dismiss", **({"hold": "ask"} if S.stage == "ready" else {})}, ANSWER_S)
         run_later(restore_screen(prev, ANSWER_S))
     return {"question": question, "answer": out["answer"], "glasses": lines, "shown": shown,
             "steps": S.agent_log[first:]}
@@ -690,8 +797,14 @@ async def simulate_cancel():
 async def demo_reset():
     S.reset()
     await publish("demo.reset", {})
-    await show("ready", ["Ready", "Tap to start"], {"press": "start"})
+    await show_ready()
+    refresh_live_flight()
     return {"ok": True}
+
+
+@app.on_event("startup")
+async def find_live_flight() -> None:
+    refresh_live_flight(force=True)
 
 
 @app.get("/state")
@@ -862,7 +975,7 @@ def set_mandate(fields: dict):
 
 @app.get("/flights/search")
 async def flights_search():
-    options, source, error = await find_options(MOCK["booking"]["from"], MOCK["booking"]["to"])
+    options, source, error = await find_options(booking()["from"], booking()["to"])
     return {"options": policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"]),
             "source": source, "error": error}
 

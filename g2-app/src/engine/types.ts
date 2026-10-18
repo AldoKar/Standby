@@ -64,6 +64,8 @@ export interface EventData {
   'call.completed': { outcome: CallOutcome; transcript_url: string | null; verified: boolean }
   'task.resolved': { flight: string | null; lodging: { held: boolean; door_code: string | null } }
   'voice.heard': { screen_id: string; transcript: string; intent: string; confidence: number; via: string; model?: string | null; note?: string | null }
+  'agent.answer': { question: string; answer: string; glasses: string[] }
+  'trip.updated': { airline: string; flight: string; route: string; date: string; departs: string; source: string }
   'demo.reset': Record<string, never>
 }
 
@@ -100,6 +102,14 @@ export interface TestsResult {
   passed: number
   total: number
   cases: { name: string; passed: boolean; detail?: string }[]
+}
+
+/** POST /ask response (free question; the short answer reaches the lens as an `answer` hud.screen). */
+export interface AskResult {
+  question: string // what was heard (transcribed in any language) or typed
+  answer: string // 1-3 sentences, for the phone / web page
+  glasses: string[] // the lines the engine put on the `answer` screen
+  shown: boolean // false while a spend is waiting: the answer doesn't cover it
 }
 
 /** POST /voice response. */

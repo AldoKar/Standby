@@ -4,7 +4,7 @@
 //   syllables and unvoiced consonants (s, f, th) don't cut a phrase in half.
 // - Adaptive noise floor: the open threshold follows the room's background level.
 // - Only the wearer: frames the Even app tags `other` (e.g. the clerk on the speakerphone) count as silence.
-// - Short-command timing: ~800 ms of silence ends an utterance; capped at 5 s.
+// - Short-command timing: ~800 ms of silence ends an utterance; capped at 5 s (free questions pass longer ones).
 // - Keeps ~300 ms of pre-roll so the first syllable isn't lost.
 import { AudioSpeakerRole } from '@evenrealities/even_hub_sdk'
 
@@ -22,6 +22,8 @@ const MAX_UTTERANCE_MS = 5000
 const PREROLL_MS = 300
 
 export type Utterance = { pcm: Int16Array; ms: number; endedAt: number }
+/** Free questions (push-to-talk) are longer and have pauses: e.g. { endSilenceMs: 1200, maxMs: 10000 }. */
+export type DetectorTiming = { endSilenceMs?: number; maxMs?: number }
 
 export class UtteranceDetector {
   private noise = 300
@@ -35,10 +37,14 @@ export class UtteranceDetector {
   private speechMs = 0
   private readonly onUtterance: (u: Utterance) => void
   private readonly onSpeechStart?: () => void
+  private readonly endSilenceMs: number
+  private readonly maxMs: number
 
-  constructor(onUtterance: (u: Utterance) => void, onSpeechStart?: () => void) {
+  constructor(onUtterance: (u: Utterance) => void, onSpeechStart?: () => void, timing: DetectorTiming = {}) {
     this.onUtterance = onUtterance
     this.onSpeechStart = onSpeechStart
+    this.endSilenceMs = timing.endSilenceMs ?? END_SILENCE_MS
+    this.maxMs = timing.maxMs ?? MAX_UTTERANCE_MS
   }
 
   reset() {
@@ -103,7 +109,7 @@ export class UtteranceDetector {
     this.speechMs += FRAME_MS
     const voiced = !someoneElse && rms >= open * SUSTAIN_RATIO
     this.silentMs = voiced ? 0 : this.silentMs + FRAME_MS
-    if (this.silentMs >= END_SILENCE_MS || this.speechMs >= MAX_UTTERANCE_MS) this.finish()
+    if (this.silentMs >= this.endSilenceMs || this.speechMs >= this.maxMs) this.finish()
   }
 
   private finish() {
