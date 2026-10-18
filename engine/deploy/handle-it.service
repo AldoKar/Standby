@@ -8,9 +8,11 @@ User=handleit
 WorkingDirectory=/opt/handle-it/engine
 EnvironmentFile=-/opt/handle-it/engine/.env
 # One worker only: state and SSE subscribers live in memory.
-ExecStart=/opt/handle-it/engine/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+# SSE streams never close on their own, so cap the graceful shutdown at 3 s; clients reconnect.
+ExecStart=/opt/handle-it/engine/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --timeout-graceful-shutdown 3
 Restart=always
-RestartSec=2
+RestartSec=1
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
