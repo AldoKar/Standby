@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,9 +19,11 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import call, policy, verify
+from . import call, policy, verify, voice
+from . import call, policy, tap, verify
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +60,29 @@ class State:
         self.fee_allowance = 0.0
         self.outcome: dict | None = None
         self.screen: dict = ready_screen()
+        self.vault: list[dict] = seed_vault()
+
+
+def seed_vault() -> list[dict]:
+    """What the traveler saved before the trip (pre-seeded, per the SPEC). The flow adds to it."""
+    b, lodging = MOCK["booking"], MOCK["lodging"]
+    return [
+        {"id": "vlt-ua183", "type": "boarding_pass", "title": f"{b['airline']} {b['flight']} {b['from']}-{b['to']}",
+         "saved_at": None, "source": "traveler",
+         "data": {k: b[k] for k in ("airline", "flight", "from", "to", "date", "departs", "pnr")}},
+        {"id": "vlt-lodging", "type": "lodging_confirmation", "title": lodging["name"],
+         "saved_at": None, "source": "traveler",
+         "data": {"name": lodging["name"], "confirmation": lodging["confirmation"],
+                  "desk_closes": lodging["desk_closes"], "note": lodging["note"]}},
+    ]
+
+
+async def save_to_vault(type_: str, title: str, data: dict) -> dict:
+    item = {"id": f"vlt-{uuid.uuid4().hex[:8]}", "type": type_, "title": title,
+            "saved_at": now(), "source": "agent", "data": data}
+    S.vault.append(item)
+    await publish("vault.updated", {"type": type_, "id": item["id"], "title": title})
+    return item
 
 
 def ready_screen() -> dict:
@@ -104,6 +130,7 @@ def snapshot() -> dict:
         "approvals": list(S.approvals.values()),
         "outcome": S.outcome,
         "ledger": S.ledger.view(S.mandate),
+        "vault": S.vault,
         "call_mode": CALL_MODE,
     }
 
@@ -182,10 +209,19 @@ async def answer(approval_id: str, approved: bool, via: str) -> dict:
 
 async def pay(a: dict) -> None:
     ref = f"VIC-{uuid.uuid4().hex[:8].upper()}"
+    # Signed request to the (mock) merchant, which checks it the way a TAP merchant would.
+    authority = re.sub(r"[^a-z0-9]+", "-", a["merchant"].lower()).strip("-") + ".merchant.example"
+    body = {"merchant": a["merchant"], "amount": a["amount"], "mcc": a["mcc"],
+            "token_id": S.mandate.token_id, "reference": ref}
+    raw, headers = tap.sign(authority, "/agent/pay", body)
+    ok, why = tap.verify(authority, "/agent/pay", raw, headers)
+    signature = {"keyid": tap.KEY_ID, "tag": tap.TAG, "alg": "ed25519", "verified": ok, "reason": why,
+                 "signature_input": headers["Signature-Input"], "signature": headers["Signature"]}
     S.ledger.spends.append({"amount": a["amount"], "merchant": a["merchant"], "mcc": a["mcc"],
-                            "kind": a["kind"], "reference": ref, "ts": now()})
+                            "kind": a["kind"], "reference": ref, "ts": now(), "signature": signature})
     await publish("payment.executed", {"amount": a["amount"], "merchant": a["merchant"], "mcc": a["mcc"],
-                                       "token_id": S.mandate.token_id, "reference": ref})
+                                       "token_id": S.mandate.token_id, "reference": ref,
+                                       "signature": {k: signature[k] for k in ("keyid", "tag", "verified")}})
 
 
 async def after_answer(a: dict) -> None:
@@ -195,8 +231,13 @@ async def after_answer(a: dict) -> None:
         else:
             S.stage = "cancelled"
             await show("cancelled", ["Not booked", "Tap = see it again"], {"press": "fix"})
-    elif a["kind"] == "fee" and CALL_MODE == "mock":
-        run_later(mock_call_finish(a["status"] == "approved"))
+    elif a["kind"] == "fee":
+        if S.stage == "fee":  # the wearer answered on the glasses: leave the fee screen, the call goes on
+            S.stage = "calling"
+            first = f"+${a['amount']:g} OK" if a["status"] == "approved" else "Fee declined"
+            await show("call_resumed", [first, "Finishing the call"])
+        if CALL_MODE == "mock":
+            run_later(mock_call_finish(a["status"] == "approved"))
 
 
 async def after_booking() -> None:
@@ -207,7 +248,12 @@ async def after_booking() -> None:
                              "status": "pending", "ts": now()})
     await publish("offer.declined", {"airline": offer["airline"], "flight": offer["flight"],
                                      "refund_usd": refund["amount_usd"], "status": "pending"})
-    await publish("vault.updated", {"type": "boarding_pass", "flight": p["flight"]})
+    paid = next((s for s in reversed(S.ledger.spends) if s["kind"] == "booking"), {})
+    b = MOCK["booking"]
+    await save_to_vault("boarding_pass", f"{p['airline']} {p['flight']} {b['from']}-{b['to']}", {
+        "airline": p["airline"], "flight": p["flight"], "from": b["from"], "to": b["to"], "date": b["date"],
+        "departs": p["departs"], "arrives": p["arrives"], "price_usd": p["price_usd"],
+        "payment_reference": paid.get("reference"), "replaces": b["flight"]})
     await show("booked", ["Booked · pass saved"])
     await asyncio.sleep(1.5)
     eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
@@ -223,10 +269,18 @@ async def after_booking() -> None:
         try:
             await start_call(variables)
         except Exception as e:  # keep the demo alive; the dashboard can play the recorded call
-            await publish("call.completed", {"outcome": {"held": False, "error": str(e)}, "transcript_url": None, "verified": False})
+            await call_failed(str(e))
     else:
         await asyncio.sleep(MOCK_CLERK_DELAY_S)
         await request_fee(MOCK["call_script_mock"]["fee_usd"], MOCK["call_script_mock"]["fee_reason"])
+
+
+async def call_failed(reason: str) -> None:
+    """The call never connected: say so on the glasses instead of sitting on "Calling guesthouse"."""
+    S.outcome = {"held": False, "error": reason, "verified": False}
+    await publish("call.completed", {"outcome": S.outcome, "transcript_url": None, "verified": False})
+    S.stage = "resolved"
+    await show("call_failed", ["Call didn't connect", "Details on your phone"], {"press": "dismiss"}, 10)
 
 
 async def request_fee(amount: float, reason: str, merchant: str | None = None, mcc: str | None = None) -> dict:
@@ -243,25 +297,32 @@ async def mock_call_finish(approved: bool) -> None:
     script = MOCK["call_script_mock"]
     await finish_call({"held": approved, "fee_usd": script["fee_usd"] if approved else 0,
                        "door_code": script["door_code"] if approved else None,
-                       "contact": script["contact"], "verified": True}, None)
+                       "contact": script["contact"], "verified": True,
+                       "summary": "Simulated call: room held with a late check-in fee." if approved
+                       else "Simulated call: fee declined, room not held."}, None)
 
 
-async def finish_call(outcome: dict, transcript_url: str | None) -> None:
+async def finish_call(outcome: dict, transcript_url: str | None, transcript: str | None = None) -> None:
     S.outcome = outcome
     await publish("call.completed", {"outcome": outcome, "transcript_url": transcript_url,
                                      "verified": bool(outcome.get("verified"))})
     held, code = outcome.get("held"), outcome.get("door_code")
     await publish("task.resolved", {"flight": S.pick["flight"] if S.pick else None,
                                     "lodging": {"held": held, "door_code": code}})
-    await publish("vault.updated", {"type": "call_transcript"})
+    await save_to_vault("call_transcript", f"Call to {MOCK['lodging']['name']}", {
+        "held": held, "door_code": code, "contact": outcome.get("contact"), "fee_usd": outcome.get("fee_usd"),
+        "verified": bool(outcome.get("verified")), "summary": outcome.get("summary"),
+        "issues": outcome.get("issues", []), "transcript": transcript, "transcript_url": transcript_url,
+        "mode": CALL_MODE})
     S.stage = "resolved"
+    screen_id = "resolved"
     if held and code and outcome.get("verified"):
         lines = ["Room held", f"Door code {code}"]
     elif held:
         lines = ["Room held", "Door code on phone"]  # never show an unverified code
     else:
-        lines = ["Room not held", "Details on your phone"]
-    await show("resolved", lines, {"press": "dismiss"}, 10)
+        screen_id, lines = "not_held", ["Room not held", "Details on your phone"]
+    await show(screen_id, lines, {"press": "dismiss"}, 10)
 
 
 # ---------- SSE ----------
@@ -313,6 +374,11 @@ def pending(kind: str | None = None) -> dict | None:
 @app.post("/input")
 async def input_(g: Gesture):
     stage, gesture = S.stage, g.gesture
+    # A gesture made on a screen that's no longer shown (e.g. a slow "hold" meant for the booking
+    # that lands on the fee screen) must not approve anything. Callers without screen_id
+    # (dashboard buttons) keep working as before.
+    if g.screen_id and g.screen_id != S.screen["screen_id"]:
+        return {"handled": False, "stage": stage, "reason": f"stale screen: {g.screen_id}, now {S.screen['screen_id']}"}
     if gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
     elif gesture == "press" and stage == "resolved":
@@ -333,6 +399,53 @@ async def input_(g: Gesture):
     else:
         return {"handled": False, "stage": stage}
     return {"handled": True, "stage": S.stage}
+
+
+class VoiceInput(BaseModel):
+    screen_id: str
+    audio: str | None = None  # base64 WAV, 16 kHz mono (what the G2 mic gives)
+    format: str = "wav"
+    transcript: str | None = None  # skip speech-to-text: typed commands and tests
+
+
+@app.post("/voice")
+async def voice_(v: VoiceInput):
+    """Voice command from the glasses: transcribe, pick an intent the current screen allows, then run it
+    through the same path as a gesture. An approval of a spend is never applied by voice: it returns
+    confirm_required and the wearer taps to confirm (the spend still goes through policy.py)."""
+    def reply(**kw) -> dict:
+        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "gesture": None,
+                "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
+        return {**base, **kw}
+
+    if v.screen_id != S.screen["screen_id"]:  # check before paying for speech-to-text
+        return reply(reason=f"stale screen: {v.screen_id}, now {S.screen['screen_id']}")
+    if not voice.intents_for(v.screen_id):
+        return reply(reason=f"no voice commands on {v.screen_id}")
+    if v.transcript is not None:
+        transcript = v.transcript.strip()
+    elif v.audio:
+        if len(v.audio) > voice.MAX_AUDIO_BYTES * 4 // 3:
+            return reply(reason="audio too long")
+        try:
+            transcript = await voice.transcribe(v.audio, v.format)
+        except Exception as e:  # keep the glasses responsive; the wearer can still tap
+            return reply(reason=str(e)[:200])
+    else:
+        return reply(reason="no audio")
+
+    intent, confidence, via = await voice.classify(transcript, v.screen_id, S.screen["lines"])
+    gesture = voice.intents_for(v.screen_id).get(intent)
+    await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript, "intent": intent,
+                                  "confidence": confidence, "via": via})
+    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture)
+    if not gesture:
+        return {**result, "reason": "didn't match a command on this screen"}
+    if voice.needs_tap(v.screen_id, intent):
+        return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
+    # The screen may have changed while we were transcribing; /input checks screen_id again.
+    r = await input_(Gesture(gesture=gesture, screen_id=v.screen_id))
+    return {**result, "handled": r["handled"], "stage": r["stage"], "reason": r.get("reason")}
 
 
 @app.post("/simulate/cancel")
@@ -414,11 +527,16 @@ async def call_approval(r: SpendRequest):
 
 
 @app.get("/call/approval/{approval_id}")
-def call_approval_status(approval_id: str):
-    """Voice tool check_approval."""
+async def call_approval_status(approval_id: str, wait_s: float = 0):
+    """Voice tool check_approval. With wait_s, holds the request until the wearer answers
+    or time runs out (capped at 12 s), since the voice agent can't sleep between checks."""
     a = S.approvals.get(approval_id)
     if not a:
         raise HTTPException(404, f"no approval {approval_id}")
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0.0, min(wait_s, 12.0))
+    while a["status"] == "pending" and loop.time() < end:
+        await asyncio.sleep(0.25)
     return {"approval_id": approval_id, "status": a["status"]}
 
 
@@ -429,7 +547,7 @@ class CallOutcome(BaseModel):
     fee_usd: float | None = None
     transcript_url: str | None = None
     verified: bool = False
-    transcript: str | None = None  # "Agent: ...\nClerk: ..."; when present, Gemini checks the outcome
+    transcript: str | None = None  # "Agent: ...\nClerk: ..."; when present, Claude checks the outcome
 
 
 @app.post("/call/completed")
@@ -437,14 +555,14 @@ async def call_completed(o: CallOutcome):
     outcome = o.model_dump(exclude={"transcript_url", "transcript"})
     if o.transcript:
         outcome = await verify.check_call(o.transcript, outcome)
-    await finish_call(outcome, o.transcript_url)
+    await finish_call(outcome, o.transcript_url, o.transcript)
     return {"ok": True, "outcome": outcome}
 
 
 @app.post("/call/webhook")
 async def call_webhook(request: Request):
     """ElevenLabs post-call webhook. Verifies the HMAC signature, then checks the transcript
-    with Gemini in the background (ElevenLabs only needs a fast 200)."""
+    with Claude in the background (ElevenLabs only needs a fast 200)."""
     raw = await request.body()
     if not call.signature_ok(raw, request.headers.get("elevenlabs-signature"), os.getenv("ELEVENLABS_WEBHOOK_SECRET")):
         raise HTTPException(401, "invalid or missing ElevenLabs signature")
@@ -457,10 +575,10 @@ async def call_webhook(request: Request):
         transcript = call.transcript_text(data.get("transcript") or [])
 
         async def check_and_finish():
-            await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None)
+            await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None, transcript)
         run_later(check_and_finish())
     elif event.get("type") == "call_initiation_failure":
-        run_later(finish_call({"held": False, "verified": False, "issues": ["the call did not connect"]}, None))
+        run_later(call_failed("the call did not connect"))
     return {"ok": True}
 
 
@@ -489,6 +607,18 @@ async def merchant_payment(p: PaymentRequest):
     return {"paid": True, "token_id": S.mandate.token_id, "reason": why}
 
 
+@app.get(tap.DIRECTORY_PATH)
+def tap_key_directory():
+    """Public key merchants use to check the agent's signed payment requests."""
+    return tap.directory()
+
+
+@app.get("/vault")
+def vault():
+    """The traveler's documents: pre-seeded ones plus what the agent saved during the flow."""
+    return {"items": S.vault}
+
+
 @app.get("/ledger")
 def ledger():
     return S.ledger.view(S.mandate)
@@ -505,6 +635,19 @@ def flights_search():
     return {"options": policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])}
 
 
+@app.get("/tests")
+def tests():
+    """Last `python test_engine.py` run, for the dashboard's pass-rate panel."""
+    results = Path(__file__).resolve().parents[1] / "test-results.json"
+    if not results.exists():
+        raise HTTPException(404, "no test run yet; run python test_engine.py in engine/")
+    return json.loads(results.read_text())
+
+
 @app.get("/")
 def dashboard():
     return FileResponse(DASHBOARD)
+
+
+# The dashboard's other files, e.g. the recorded-call fallback at /dashboard/recorded-call.mp3.
+app.mount("/dashboard", StaticFiles(directory=DASHBOARD.parent), name="dashboard")

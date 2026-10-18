@@ -1,9 +1,13 @@
 """Run from engine/:  python test_engine.py"""
 import os
 import time
+from pathlib import Path
 
 os.environ.setdefault("MOCK_CLERK_DELAY_S", "0.2")
 os.environ.setdefault("MOCK_CALL_END_S", "0.2")
+# Never place real calls from the tests, even if engine/.env says CALL_MODE=elevenlabs
+# (app/__init__ loads .env, but variables already set here win).
+os.environ["CALL_MODE"] = "mock"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -197,13 +201,212 @@ def test_elevenlabs_webhook(c):
         c.post("/demo/reset")
 
 
+def test_call_failure_and_long_poll(c):
+    import threading
+    c.post("/demo/reset")
+    c.post("/tasks", json={})
+    a = [x for x in c.get("/state").json()["approvals"] if x["status"] == "pending"][0]
+    # long-poll: the check waits for the wearer instead of returning "pending" at once
+    threading.Timer(0.5, lambda: c.post("/approval", json={"approval_id": a["approval_id"], "approved": False})).start()
+    t = time.time()
+    r = c.get(f"/call/approval/{a['approval_id']}?wait_s=5").json()
+    assert r["status"] == "rejected" and time.time() - t < 4
+    # without wait_s it answers at once (unchanged behavior)
+    assert c.get(f"/call/approval/{a['approval_id']}").json()["status"] == "rejected"
+
+    # a call that never connects ends on a clear screen, not "Calling guesthouse"
+    import hashlib, hmac, json as _json
+    os.environ["ELEVENLABS_WEBHOOK_SECRET"] = "whsec_test"
+    task_id = c.get("/state").json()["task_id"]
+    body = _json.dumps({"type": "call_initiation_failure",
+                        "data": {"conversation_initiation_client_data": {"dynamic_variables": {"task_id": task_id}}}})
+    ts = str(int(time.time()))
+    sig = hmac.new(b"whsec_test", f"{ts}.{body}".encode(), hashlib.sha256).hexdigest()
+    c.post("/call/webhook", content=body, headers={"elevenlabs-signature": f"t={ts},v0={sig}"})
+    s = wait_for(c, "resolved")
+    assert s["screen"]["lines"] == ["Call didn't connect", "Details on your phone"]
+    c.post("/demo/reset")
+
+
+def test_stale_gestures_and_not_held(c):
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press", "screen_id": "ready"})
+    c.post("/input", json={"gesture": "press", "screen_id": "cancelled"})
+    assert c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+
+    # a late "hold" from another screen must not book the flight
+    r = c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"}).json()
+    assert r["handled"] is False and "stale screen" in r["reason"]
+    assert c.get("/ledger").json()["spends"] == []
+
+    # the same gesture for the screen actually shown goes through
+    assert c.post("/input", json={"gesture": "hold", "screen_id": "booking_offer"}).json()["handled"] is True
+    assert [s["amount"] for s in c.get("/ledger").json()["spends"]] == [215]
+
+    # a call that ends without the room gets its own screen id, still at stage resolved
+    c.post("/call/completed", json={"held": False})
+    s = c.get("/state").json()
+    assert s["stage"] == "resolved" and s["screen"]["screen_id"] == "not_held"
+    assert s["screen"]["lines"] == ["Room not held", "Details on your phone"]
+    c.post("/demo/reset")
+
+
+def test_voice_commands(c):
+    """Typed transcripts exercise the keyword path with no network and no OpenRouter key."""
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})  # cancelled
+    say = lambda text, screen: c.post("/voice", json={"screen_id": screen, "transcript": text}).json()  # noqa: E731
+    # a gesture-less screen and a stale screen do nothing
+    assert say("yes", "booking_offer")["reason"].startswith("stale screen")
+    r = say("Yes, fix it", "cancelled")
+    assert r["intent"] == "fix" and r["via"] == "keywords" and r["handled"] and r["stage"] == "offer"
+    # approving a spend by voice never books: it asks for a tap
+    r = say("okay", "booking_offer")
+    assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
+    assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
+    # "another one" swipes to the other option; unrelated talk is unknown and changes nothing
+    assert say("show me another one", "booking_offer")["intent"] == "other_option"
+    assert c.get("/state").json()["screen"]["screen_id"] == "only_option"
+    os.environ.pop("OPENROUTER_API_KEY", None)
+    r = say("what's the weather like in San Francisco tonight", "only_option")
+    assert r["intent"] == "unknown" and not r["handled"]
+    c.post("/input", json={"gesture": "hold", "screen_id": "only_option"})
+    wait_for(c, "fee")
+    # "no" on the fee is applied by voice (declining spends nothing)
+    r = say("no thanks", "fee_request")
+    assert r["intent"] == "reject" and r["handled"]
+    wait_for(c, "resolved")
+    assert c.get("/ledger").json()["spent_usd"] == 215
+    # no audio and no transcript
+    c.post("/demo/reset")
+    assert c.post("/voice", json={"screen_id": "ready"}).json()["reason"] == "no voice commands on ready"
+    c.post("/demo/reset")
+
+
+def test_signed_payments(c):
+    """Every spend carries a TAP-style signature the merchant can check; tampering breaks it."""
+    import base64
+    from app import tap
+    c.post("/demo/reset")
+    assert c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()["status"] == "approved"
+    sig = c.get("/ledger").json()["spends"][0]["signature"]
+    assert sig["verified"] and sig["tag"] == "agent-payer-auth" and sig["keyid"] == tap.KEY_ID
+
+    # the key directory publishes the matching public key
+    jwk = c.get(tap.DIRECTORY_PATH).json()["keys"][0]
+    pub = base64.urlsafe_b64decode(jwk["x"] + "==")
+
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    # replaying the same signed request is refused
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub) == (False, "replayed nonce")
+    # changing the amount, the merchant or the signature breaks it
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert not tap.verify("guesthouse.merchant.example", "/agent/pay", b'{"amount":400}', headers, pub)[0]
+    assert not tap.verify("evil.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    forged = {**headers, "Signature": "sig1=:" + base64.b64encode(b"x" * 64).decode() + ":"}
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, forged, pub) == (False, "bad signature")
+    c.post("/demo/reset")
+
+
+def test_vault(c):
+    c.post("/demo/reset")
+    seeded = c.get("/vault").json()["items"]
+    assert [i["type"] for i in seeded] == ["boarding_pass", "lodging_confirmation"]
+    assert seeded[1]["data"]["confirmation"] == "48213" and all(i["source"] == "traveler" for i in seeded)
+
+    # the glasses flow saves the new boarding pass and the call
+    c.post("/input", json={"gesture": "press"})
+    c.post("/input", json={"gesture": "press"})
+    c.post("/input", json={"gesture": "hold"})
+    wait_for(c, "fee")
+    c.post("/input", json={"gesture": "hold"})
+    wait_for(c, "resolved")
+    items = c.get("/vault").json()["items"]
+    new_pass, call_log = items[2], items[3]
+    assert new_pass["type"] == "boarding_pass" and new_pass["data"]["flight"] == "DL1946"
+    assert new_pass["data"]["replaces"] == "UA183"
+    assert new_pass["data"]["payment_reference"] and new_pass["source"] == "agent"
+    assert call_log["type"] == "call_transcript" and call_log["data"]["door_code"] == "4417" and call_log["data"]["summary"]
+
+    # a real call's transcript is stored with its checked outcome
+    c.post("/call/completed", json={"held": False, "transcript": "Clerk: We're full tonight."})
+    last = c.get("/vault").json()["items"][-1]
+    assert last["data"]["transcript"] == "Clerk: We're full tonight." and last["data"]["held"] is False
+
+    # reset brings back only what the traveler had
+    c.post("/demo/reset")
+    assert len(c.get("/vault").json()["items"]) == 2
+
+
+def test_real_call_fee_screen(c):
+    """CALL_MODE=elevenlabs: after the wearer OKs the fee, the glasses leave the fee screen
+    while the call goes on (no real call is placed: start_call is stubbed)."""
+    from app import main as engine
+
+    async def no_call(variables):
+        return {"success": True}
+    real = (engine.CALL_MODE, engine.start_call)
+    engine.CALL_MODE, engine.start_call = "elevenlabs", no_call
+    try:
+        c.post("/demo/reset")
+        for g in ("press", "press", "hold"):
+            c.post("/input", json={"gesture": g})
+        wait_for(c, "calling")
+        # the voice agent asks for the fee mid-call, the wearer holds to OK it
+        a = c.post("/call/approval", json={"amount": 40, "reason": "late check-in"}).json()
+        assert c.get("/state").json()["screen"]["screen_id"] == "fee_request"
+        c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"})
+        s = c.get("/state").json()
+        assert s["stage"] == "calling" and s["screen"]["screen_id"] == "call_resumed"
+        assert s["screen"]["lines"] == ["+$40 OK", "Finishing the call"]
+        assert c.get(f"/call/approval/{a['approval_id']}").json()["status"] == "approved"
+        # the call ends: the outcome screen replaces it
+        c.post("/call/completed", json={"held": True, "door_code": "4417", "verified": True})
+        assert c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code 4417"]
+    finally:
+        engine.CALL_MODE, engine.start_call = real
+        c.post("/demo/reset")
+
+
+# Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
+CASES = [
+    ("Glasses flow end to end", test_glasses_flow),
+    ("ASI:One flow with fee allowance", test_asi1_flow_with_fee_allowance),
+    ("#2 Big fee ($90) denied, #9 small fee allowed", test_policy_denies_over_budget),
+    ("#8 Over-budget flight, bad amounts, wrong merchant, expired mandate", test_policy_hostile_cases),
+    ("Merchant charges: logged, once per approval", test_merchant_payment_request),
+    ("#5/#6 Call outcome checked against transcript", test_call_outcome_verification),
+    ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),
+    ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
+    ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
+    ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
+    ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
+    ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
+    ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
+]
+RESULTS = Path(__file__).parent / "test-results.json"
+
 if __name__ == "__main__":
+    import json
+    import traceback
+    from datetime import datetime, timezone
+
+    results = []
     with TestClient(app) as client:
-        test_glasses_flow(client)
-        test_asi1_flow_with_fee_allowance(client)
-        test_policy_denies_over_budget(client)
-        test_policy_hostile_cases(client)
-        test_merchant_payment_request(client)
-        test_call_outcome_verification(client)
-        test_elevenlabs_webhook(client)
+        for name, fn in CASES:
+            try:
+                fn(client)
+                results.append({"name": name, "passed": True, "detail": "ok"})
+            except Exception as e:
+                detail = str(e) or traceback.format_exc(limit=1).strip().splitlines()[-1]
+                results.append({"name": name, "passed": False, "detail": detail[:200]})
+                client.post("/demo/reset")
+    passed = sum(r["passed"] for r in results)
+    RESULTS.write_text(json.dumps({"ran_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                   "passed": passed, "total": len(results), "cases": results}, indent=2))
+    for r in results:
+        print("PASS" if r["passed"] else "FAIL", r["name"], "" if r["passed"] else f"-> {r['detail']}")
+    if passed < len(results):
+        raise SystemExit(f"{len(results) - passed} failed")
     print("engine ok")
