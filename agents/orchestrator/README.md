@@ -1,11 +1,11 @@
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 
-# Handle It — travel disruption orchestrator
+# Standby — travel disruption orchestrator
 
 **Rebooks cancelled flights within a spending mandate, then phones places with no API.**
 
-When your flight is cancelled, Handle It finds a seat that still gets you there tonight,
+When your flight is cancelled, Standby finds a seat that still gets you there tonight,
 asks you once before it spends, books it, and then calls the places that only answer a
 phone — the guesthouse whose front desk closes before you land.
 

@@ -18,8 +18,8 @@ from uagents import Agent, Context, Protocol
 from uagents_core.contrib.protocols.chat import ChatAcknowledgement, ChatMessage, TextContent, chat_protocol_spec
 
 agent = Agent(
-    name="handle-it-caller",
-    seed=os.getenv("CALLER_SEED", "handle-it caller dev seed, change me"),
+    name="standby-caller",
+    seed=os.getenv("CALLER_SEED", "standby caller dev seed, change me"),
     port=int(os.getenv("CALLER_PORT", "8002")),
     mailbox=True,
 )

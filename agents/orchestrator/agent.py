@@ -1,4 +1,4 @@
-"""Handle It orchestrator: the ASI:One front door (owner: P2).
+"""Standby orchestrator: the ASI:One front door (owner: P2).
 
 Chat Protocol agent that runs the whole disruption flow inside one ASI:One chat:
 cancelled -> options -> approve -> book -> call -> result.
@@ -45,7 +45,7 @@ RESOLVE_TIMEOUT_S = 40  # the mock call takes ~6s; a real ElevenLabs call is slo
 # the system prompt spells out when to call each one.
 THINKING = {"type": "disabled"}
 
-SYSTEM_PROMPT = """You are Handle It, a travel agent for a traveller whose flight was \
+SYSTEM_PROMPT = """You are Standby, a travel agent for a traveller whose flight was \
 just cancelled. You work inside an ASI:One chat.
 
 What you can do: rebook a cancelled flight within the traveller's spending mandate, then \
@@ -207,12 +207,12 @@ AGENT_SEED = os.getenv("AGENT_SEED")
 if not AGENT_SEED:
     raise SystemExit(
         "AGENT_SEED is not set. It decides the agent's address on Agentverse: the "
-        "registered Handle It agent is agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf. "
+        "registered Standby agent is agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf. "
         "Put that seed in .env (never in git) before starting the agent."
     )
 
 agent = Agent(
-    name="handle-it",
+    name="standby",
     seed=AGENT_SEED,
     port=int(os.getenv("ORCHESTRATOR_PORT", "8001")),
     mailbox=True,
@@ -538,7 +538,7 @@ async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
 
 @agent.on_event("startup")
 async def startup(ctx: Context):
-    ctx.logger.info(f"Handle It orchestrator ready at {ctx.agent.address}")
+    ctx.logger.info(f"Standby orchestrator ready at {ctx.agent.address}")
     ctx.logger.info(f"engine: {ENGINE_URL}  model: {MODEL}")
 
 

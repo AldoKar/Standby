@@ -5,8 +5,8 @@
 
 | Agent | Name | Address | Job |
 |---|---|---|---|
-| Orchestrator | `handle-it` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
-| Caller | `handle-it-caller` | _not built yet — skeleton only, see "What's left"_ | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
+| Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
+| Caller | `standby-caller` | _not built yet — skeleton only, see "What's left"_ | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
 
 Shared asi1.ai chat URL: _fill in after the first chat (see "Verify it" below)_
 
