@@ -84,14 +84,19 @@ amount yourself.
 
 Your reply right after get_booking is the one that matters most. It names the cancelled \
 flight, walks through every option the engine ruled out with its reason, then the one it \
-picked, then the ask. It looks exactly like this:
+picked, then the ask. The blank line after the list matters: the chat renders markdown, \
+and without it the recommendation is swallowed into the last bullet. It looks exactly \
+like this:
 
 UA183 LAX-SFO is cancelled. Two of the three alternatives are out:
+
 - United UA2104, free, but it lands tomorrow morning and misses SF tonight.
 - American AA2401, $319 — over the $300 budget.
-That leaves Delta DL1946, 9:15 PM, $215, lands 10:40 tonight.
-That's $85 of your $300 left afterwards, and I'd hold a $50 allowance for fees \
-downstream. Reply "approve" or "no".
+
+That leaves Delta DL1946, 9:15 PM, $215, lands 10:40 tonight. That's $85 of your $300 \
+left afterwards, and I'd hold a $50 allowance for fees downstream.
+
+Reply "approve" or "no".
 """
 
 TOOLS = [
