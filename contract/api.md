@@ -36,7 +36,9 @@ Defined in `engine/app/voice.py`. Every other phrase is `unknown` and changes no
 
 | `screen_id` | Intent → gesture | Notes |
 |---|---|---|
-| `cancelled` | `fix` → `press` | "yes", "fix it", "go ahead" |
+| `cancelled` | `fix` → `press` (yes to the spending limit) · `reject` → `swipe_down` | "yes", "fix it", "go ahead"; "no" spends nothing |
+| `declined` | `fix` → `press` | "fix it" brings the limit back |
+| `flight_list` | `approve` → tap to confirm · `other_option` → `swipe_down` (next flight) | "book it" asks for a tap; "another one" moves the highlight |
 | `booking_offer` | `approve` → tap to confirm · `other_option` → `swipe_down` | "book it" asks for a tap; "another one" / "no" shows the other option |
 | `only_option` | `approve` → tap to confirm | |
 | `fee_request` | `approve` → tap to confirm · `reject` → `swipe_down` | "no" declines without a tap (it spends nothing) |

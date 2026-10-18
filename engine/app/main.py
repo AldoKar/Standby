@@ -69,6 +69,11 @@ class State:
         self.ledger = policy.Ledger()
         self.options: list[dict] = []
         self.flights_source, self.flights_error = "mock", None
+        self.flow_source: str | None = None  # glasses / simulate / asi1
+        self.raw_options: list[dict] = []  # unranked, so a new spending limit can re-rank them
+        self.proposal: dict | None = None  # the spending limit offered at cancellation (budget consent)
+        self.choices: list[dict] = []  # the flights listed on the glasses, recommended first
+        self.cursor = 0  # which of them is highlighted
         self.pick: dict | None = None
         self.approvals: dict[str, dict] = {}
         self.fee_allowance = 0.0
@@ -219,6 +224,7 @@ def snapshot() -> dict:
 
 async def start_flow(source: str) -> None:
     S.task_id = f"task-{uuid.uuid4().hex[:8]}"
+    S.flow_source = source
     S.stage = "searching"
     b, offer = booking(), MOCK["airline_offer"]
     await publish("flight.cancelled", {"flight": b["flight"], "route": f"{b['from']}-{b['to']}",
@@ -229,9 +235,64 @@ async def start_flow(source: str) -> None:
         S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
     await publish("options.ranked", {"options": S.options, "source": S.flights_source, "error": S.flights_error,
                                       "chosen_by": "agent" if S.pick and S.pick.get("chosen_by") == "agent" else "policy"})
-    await show("cancelled", [f"{b['flight']} cancelled", f"{offer['airline']}: {hhmm(offer['departs'])} tmrw", "Tap = fix it"],
-               {"press": "fix"})
+    S.proposal = S.proposal or propose_limit()
+    await publish("budget.proposed", S.proposal)
+    await show_consent()
     S.stage = "cancelled"
+
+
+async def show_consent() -> None:
+    """Budget consent at the moment it matters: the agent asks once for a spending limit it chose from
+    tonight's prices, instead of the traveler setting rules before every trip."""
+    b = booking()
+    await show("cancelled", [f"{b['flight']} cancelled", f"Fix it for up to ${S.proposal['limit_usd']:g}?",
+                             "Tap = yes, Swipe = no"], {"press": "fix", "swipe_down": "no"})
+
+
+LIMIT_STEP = 50  # limits are round numbers
+LIMIT_EXTRAS_USD = 50  # headroom over the cheapest fare for fees on the way (late check-in, a meal)
+LIMIT_MAX_USD = 1000
+
+
+def on_time(options: list[dict]) -> list[dict]:
+    """Options that get there by the deadline, whatever they cost."""
+    return [o for o in options if o["day"] == "today" and o["arrives"] <= MOCK["deadline"]["arrive_by"]]
+
+
+def propose_limit(amount: float | None = None, reason: str | None = None, by: str = "policy") -> dict:
+    """The spending limit offered to the traveler. Claude may suggest the amount; code rounds it up and keeps
+    it between the cheapest on-time fare and LIMIT_MAX_USD. Without a suggestion: cheapest fare plus extras."""
+    fares = sorted(o["price_usd"] for o in on_time(S.raw_options or S.options) if o["price_usd"] > 0)
+    low, high = (fares[0], fares[-1]) if fares else (0, 0)
+    wanted = amount if amount and amount > 0 else low + LIMIT_EXTRAS_USD
+    limit = min(LIMIT_MAX_USD, max(low, -(-wanted // LIMIT_STEP) * LIMIT_STEP))
+    if not reason:
+        span = f"${low:g}-${high:g}" if high > low else f"${low:g}"
+        reason = (f"Flights that get you there tonight run {span}; ${limit:g} covers the flight plus fees on the way. "
+                  f"I'll ask before anything over ${S.mandate.ask_over_usd:g}.")
+    return {"limit_usd": limit, "ask_over_usd": S.mandate.ask_over_usd, "fares_usd": [low, high],
+            "reason": reason[:400], "proposed_by": by}
+
+
+async def accept_limit(via: str) -> None:
+    """The traveler said yes: the mandate's budget becomes the proposed limit, and the flights are re-ranked
+    under it (Claude's pick stays if it still fits)."""
+    limit = S.proposal["limit_usd"]
+    if S.mandate.budget_usd != limit:
+        S.mandate.budget_usd = limit
+        picked = S.pick or {}
+        S.options = policy.rank_options(S.raw_options or S.options, S.mandate, S.ledger, MOCK["deadline"])
+        keep = next((o for o in S.options if o["id"] == picked.get("id") and o["verdict"] != "rejected"), None)
+        if keep:
+            for o in S.options:
+                o["verdict"] = "ok" if o["verdict"] == "pick" else o["verdict"]
+            keep["verdict"] = "pick"
+            keep.update({k: v for k, v in picked.items() if k in ("chosen_by", "agent_reason")})
+        S.pick = keep or next((o for o in S.options if o["verdict"] == "pick"), None)
+    S.mandate.instruction = (f"Get me to SF tonight. Up to ${limit:g} total. "
+                             f"Ask me before any spend over ${S.mandate.ask_over_usd:g}.")
+    await publish("mandate.set", {"budget_usd": limit, "ask_over_usd": S.mandate.ask_over_usd, "via": via,
+                                  "reason": S.proposal["reason"], "proposed_by": S.proposal["proposed_by"]})
 
 
 # ponytail: fixed PDT offset (the demo is in LA in October); zoneinfo if it ever runs elsewhere.
@@ -241,7 +302,10 @@ LA = timezone(timedelta(hours=-7))
 async def find_options(origin: str, dest: str, date: str | None = None) -> tuple[list[dict], str, str | None]:
     """The airline's free rebooking plus live Duffel fares; mock fares if Duffel is off or fails."""
     if not flights.enabled():
-        return MOCK["options"], "mock", None
+        # ponytail: the glasses list three flights to choose from; ASI:One keeps the three-option set its
+        # cards and tests are built on. One list for both once the orchestrator shows more.
+        extra = MOCK["extra_options"] if S.flow_source in ("glasses", "simulate") else []
+        return [*MOCK["options"], *extra], "mock", None
     now_la = datetime.now(LA)
     today = now_la.date().isoformat()
     try:
@@ -255,8 +319,8 @@ async def find_options(origin: str, dest: str, date: str | None = None) -> tuple
 
 async def search(origin: str, dest: str, date: str | None = None) -> list[dict]:
     """Search and rank; the ranked options become the task's options."""
-    options, S.flights_source, S.flights_error = await find_options(origin, dest, date)
-    S.options = policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"])
+    S.raw_options, S.flights_source, S.flights_error = await find_options(origin, dest, date)
+    S.options = policy.rank_options(S.raw_options, S.mandate, S.ledger, MOCK["deadline"])
     return S.options
 
 
@@ -350,17 +414,70 @@ async def plan_with_agent(b: dict) -> bool:
             x["verdict"] = "ok" if x["verdict"] == "pick" else x["verdict"]
         o.update(verdict="pick", chosen_by="agent", agent_reason=i["reason"])
         S.pick = o
-        return {"chosen": f"{o['airline']} {o['flight']}", "next": "the traveler approves the booking on the glasses"}
+        return {"chosen": f"{o['airline']} {o['flight']}", "next": "now propose a spending limit with propose_limit"}
 
-    S.pick = None
+    async def propose_limit_tool(i: dict) -> dict:
+        if not S.options:
+            return {"error": "search first"}
+        S.proposal = propose_limit(float(i.get("amount_usd") or 0), str(i.get("reason", "")), "agent")
+        return {"proposed": S.proposal["limit_usd"], "next": "the traveler accepts it with a tap on the glasses"}
+
+    S.pick, S.proposal = None, None
     facts = {"traveler": MOCK["traveler"]["name"], "now": datetime.now(LA).isoformat(timespec="minutes"),
              "cancelled_booking": b, "mandate": S.mandate.instruction, "budget_left_usd": S.ledger.remaining(S.mandate),
              "deadline": MOCK["deadline"]}
     ok = await run_agent("plan", facts, {"check_flight_status": lambda i: flight_status(i["flight"]), "search_flights": search_flights,
-                                         "read_vault": read_vault, "choose_flight": choose_flight})
+                                         "read_vault": read_vault, "choose_flight": choose_flight,
+                                         "propose_limit": propose_limit_tool})
     if ok and not S.options:  # finished without searching: rank anyway so the glasses have options
         await search(b["from"], b["to"])
     return ok
+
+
+LIST_MAX = 3
+
+
+def choice_line(o: dict, on: bool) -> str:
+    """One row of the flight list, at most 24 chars: '> Delta 9:15 PM $215'."""
+    when = f"{hhmm(o['departs'])} ${o['price_usd']:g}"
+    label = f"{o['airline']} {when}"
+    if len(label) > 22:  # 24 minus the mark: long airline names fall back to the flight number
+        label = f"{o['flight']} {when}"
+    return ("> " if on else "  ") + label[:22]
+
+
+async def offer_choices() -> dict | None:
+    """After the limit is accepted: up to three flights that fit it, the recommended one first and
+    highlighted. With one flight left, the single offer screen as before."""
+    fits = [o for o in S.options if o["verdict"] != "rejected"]
+    fits.sort(key=lambda o: (o is not S.pick, o["arrives"], o["price_usd"]))
+    S.choices, S.cursor = fits[:LIST_MAX], 0
+    if len(S.choices) < 2:
+        return await offer_pick()
+    return await offer_highlighted()
+
+
+async def offer_highlighted() -> dict:
+    """The booking approval for the highlighted flight, shown as the list. Swipe moves the highlight
+    (a new approval for the next flight); hold books the one highlighted."""
+    p = S.pick = S.choices[S.cursor]
+    S.stage = "offer"
+    lines = [choice_line(o, i == S.cursor) for i, o in enumerate(S.choices)]
+    return await request_spend(
+        "booking", p["price_usd"], p["airline"], p["mcc"], f"{p['airline']} {p['flight']} tonight",
+        screen=("flight_list", lines, {"hold": "book", "swipe_down": "next"}))
+
+
+async def next_choice() -> None:
+    """Swipe on the list: withdraw the highlighted flight's approval and offer the next one."""
+    a = pending("booking")
+    if a:
+        a["status"] = "withdrawn"
+        await publish("approval.withdrawn", {"approval_id": a["approval_id"], "kind": "booking", "reason": "next option"})
+    S.cursor = (S.cursor + 1) % len(S.choices)
+    if S.cursor:
+        S.choices[S.cursor]["chosen_by"] = "traveler"
+    await offer_highlighted()
 
 
 async def offer_pick() -> dict | None:
@@ -746,7 +863,16 @@ async def input_(g: Gesture):
         await show_ready()
         refresh_live_flight()
     elif gesture == "press" and stage == "cancelled":
-        await offer_pick()
+        if S.proposal:  # yes to the spending limit (or "fix it" again after a no)
+            await accept_limit("glasses")
+            await offer_choices()
+        else:
+            await offer_pick()
+    elif gesture == "swipe_down" and stage == "cancelled" and S.screen["screen_id"] == "cancelled":
+        await publish("mandate.declined", {"limit_usd": S.proposal["limit_usd"] if S.proposal else None})
+        await show("declined", ["OK, nothing spent", "Tap = fix it"], {"press": "fix"})
+    elif stage == "offer" and gesture == "swipe_down" and S.screen["screen_id"] == "flight_list":
+        await next_choice()
     elif stage in ("offer", "fee") and gesture in ("hold", "swipe_down"):
         a = pending("booking" if stage == "offer" else "fee")
         if not a:

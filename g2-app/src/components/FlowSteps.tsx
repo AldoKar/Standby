@@ -20,13 +20,13 @@ const STEPS: { n: Step; title: string; description: string; icon: ReactNode }[] 
   {
     n: 1,
     title: 'Cancelled',
-    description: 'UA183 is cancelled. United offers 7:05 AM tomorrow; Standby looks for tonight.',
+    description: 'UA183 is cancelled. Standby checks tonight\'s fares and asks once: fix it for up to $300?',
     icon: icon(<path d="M12 3l9 17H3z M12 10v4 M12 17v.5" />),
   },
   {
     n: 2,
     title: 'Rebook',
-    description: 'Delta 9:15 PM fits the $300 mandate. Tap on the glasses, then tap again to book.',
+    description: 'Three flights fit the limit. Swipe to pick one, tap, then tap again to book.',
     icon: icon(<path d="M2 13l7-1 5-8h2l-3 8h5l2-3h2l-1 4 1 4h-2l-2-3h-5l3 8h-2l-5-8-7-1z" />),
   },
   {

@@ -13,7 +13,15 @@ const s = (
 export const SAMPLE_SCREENS: Record<string, EngineScreen> = {
   ready: s('ready', ['Ready', 'Tap = start, Hold = ask'], { press: 'start', hold: 'ask' }),
   answer: s('answer', ['UA1372 on time', 'Gate 85, Terminal 8', 'Departs 7:40 AM'], { press: 'dismiss', hold: 'ask' }, 10),
-  cancelled: s('cancelled', ['UA183 cancelled', 'United: 7:05 AM tmrw', 'Tap = fix it'], { press: 'fix' }),
+  cancelled: s('cancelled', ['UA183 cancelled', 'Fix it for up to $300?', 'Tap = yes, Swipe = no'], {
+    press: 'fix',
+    swipe_down: 'no',
+  }),
+  declined: s('declined', ['OK, nothing spent', 'Tap = fix it'], { press: 'fix' }),
+  flight_list: s('flight_list', ['> Delta 9:15 PM $215', '  Alaska 9:45 PM $239', '  WN2210 10:00 PM $229'], {
+    hold: 'book',
+    swipe_down: 'next',
+  }),
   booking_offer: s('booking_offer', ['Delta tonight 9:15 PM', '$215 · lands 10:40', 'Hold to book'], {
     hold: 'approve',
     swipe_down: 'other',
@@ -28,6 +36,11 @@ export const SAMPLE_SCREENS: Record<string, EngineScreen> = {
   }),
   denied: s('denied', ['$90 late fee', 'Over your budget', 'Confirm on phone'], {}, 8),
   resolved: s('resolved', ['Room held', 'Door code 4417'], { press: 'dismiss' }, 10),
+  claim_ready: s('claim_ready', ['Trip claim ready', '$66 back expected', 'Tap = submit'], {
+    press: 'submit',
+    swipe_down: 'later',
+  }),
+  claim_submitted: s('claim_submitted', ['Claim submitted', '$66 expected back', 'Details on phone'], { press: 'dismiss' }, 10),
   idle: s('idle', []),
 }
 

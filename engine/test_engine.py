@@ -32,9 +32,17 @@ def test_glasses_flow(c):
     assert c.post("/input", json={"gesture": "press"}).json()["stage"] == "cancelled"
     s = c.get("/state").json()
     verdicts = {o["airline"]: o["verdict"] for o in s["options"]}
-    assert verdicts == {"United": "rejected", "American": "rejected", "Delta": "pick"}
+    assert verdicts == {"United": "rejected", "American": "rejected", "Delta": "pick", "Alaska": "ok", "Southwest": "ok"}
+    # budget consent: the limit comes from tonight's fares ($215 cheapest + extras, rounded up)
+    assert s["screen"]["lines"] == ["UA183 cancelled", "Fix it for up to $300?", "Tap = yes, Swipe = no"]
+    assert s["screen"]["gestures"] == {"press": "fix", "swipe_down": "no"}
     assert c.post("/input", json={"gesture": "press"}).json()["stage"] == "offer"
-    assert c.get("/state").json()["screen"]["lines"] == ["Delta tonight 9:15 PM", "$215 · lands 10:40", "Hold to book"]
+    s = c.get("/state").json()
+    assert s["ledger"]["mandate"]["budget_usd"] == 300
+    # three flights that fit, the recommended one first and highlighted
+    assert s["screen"]["screen_id"] == "flight_list"
+    assert s["screen"]["lines"] == ["> Delta 9:15 PM $215", "  Alaska 9:45 PM $239", "  WN2210 10:00 PM $229"]
+    assert s["screen"]["gestures"] == {"hold": "book", "swipe_down": "next"}
     c.post("/input", json={"gesture": "hold"})
     s = wait_for(c, "fee")
     assert s["screen"]["screen_id"] == "fee_request"
@@ -235,7 +243,7 @@ def test_stale_gestures_and_not_held(c):
     c.post("/demo/reset")
     c.post("/input", json={"gesture": "press", "screen_id": "ready"})
     c.post("/input", json={"gesture": "press", "screen_id": "cancelled"})
-    assert c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+    assert c.get("/state").json()["screen"]["screen_id"] == "flight_list"
 
     # a late "hold" from another screen must not book the flight
     r = c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"}).json()
@@ -243,7 +251,7 @@ def test_stale_gestures_and_not_held(c):
     assert c.get("/ledger").json()["spends"] == []
 
     # the same gesture for the screen actually shown goes through
-    assert c.post("/input", json={"gesture": "hold", "screen_id": "booking_offer"}).json()["handled"] is True
+    assert c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"}).json()["handled"] is True
     assert [s["amount"] for s in c.get("/ledger").json()["spends"]] == [215]
 
     # a call that ends without the room gets its own screen id, still at stage resolved
@@ -260,26 +268,27 @@ def test_voice_commands(c):
     c.post("/input", json={"gesture": "press"})  # cancelled
     say = lambda text, screen: c.post("/voice", json={"screen_id": screen, "transcript": text}).json()  # noqa: E731
     # a gesture-less screen and a stale screen do nothing
-    assert say("yes", "booking_offer")["reason"].startswith("stale screen")
+    assert say("yes", "flight_list")["reason"].startswith("stale screen")
     r = say("Yes, fix it", "cancelled")
     assert r["intent"] == "fix" and r["via"] == "keywords" and r["handled"] and r["stage"] == "offer"
     # approving a spend by voice never books: it asks for a tap
-    r = say("okay", "booking_offer")
+    r = say("okay", "flight_list")
     assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
     assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
-    # "another one" swipes to the other option; unrelated talk is unknown and changes nothing
-    assert say("show me another one", "booking_offer")["intent"] == "other_option"
-    assert c.get("/state").json()["screen"]["screen_id"] == "only_option"
+    # "another one" moves the highlight to the next flight; unrelated talk is unknown and changes nothing
+    assert say("show me another one", "flight_list")["intent"] == "other_option"
+    s = c.get("/state").json()
+    assert s["screen"]["lines"][1] == "> Alaska 9:45 PM $239" and s["pick"]["flight"] == "AS1290"
     os.environ.pop("OPENROUTER_API_KEY", None)
-    r = say("what's the weather like in San Francisco tonight", "only_option")
+    r = say("what's the weather like in San Francisco tonight", "flight_list")
     assert r["intent"] == "unknown" and not r["handled"]
-    c.post("/input", json={"gesture": "hold", "screen_id": "only_option"})
+    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"})
     wait_for(c, "fee")
     # "no" on the fee is applied by voice (declining spends nothing)
     r = say("no thanks", "fee_request")
     assert r["intent"] == "reject" and r["handled"]
     wait_for(c, "resolved")
-    assert c.get("/ledger").json()["spent_usd"] == 215
+    assert c.get("/ledger").json()["spent_usd"] == 239
     # no audio and no transcript
     c.post("/demo/reset")
     assert c.post("/voice", json={"screen_id": "ready"}).json()["reason"] == "no voice commands on ready"
@@ -331,7 +340,7 @@ def test_voice_model_fallback(c):
         c.post("/demo/reset")
         c.post("/input", json={"gesture": "press"})
         c.post("/input", json={"gesture": "press"})
-        reply = c.post("/voice", json={"screen_id": "booking_offer", "transcript": phrase}).json()
+        reply = c.post("/voice", json={"screen_id": "flight_list", "transcript": phrase}).json()
         assert reply["intent"] == "unknown" and reply["reason"].startswith("intent model failed")
         # 5. The keyword path still answers instantly, no model at all
         calls.clear()
@@ -561,7 +570,7 @@ def test_ask(c):
             c.post("/input", json={"gesture": g})
         agent.enabled = lambda: True
         r = c.post("/ask", json={"question": "Status of UA183?"}).json()
-        assert not r["shown"] and c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+        assert not r["shown"] and c.get("/state").json()["screen"]["screen_id"] == "flight_list"
         assert seen["UA183"]["status"] == "cancelled"
 
         agent.can_ask = lambda: False
@@ -748,6 +757,46 @@ def test_claim_api(c):
         c.post("/demo/reset")
 
 
+def test_budget_consent_and_list(c):
+    """The limit is offered once, at cancellation; no spends nothing; swiping the list withdraws one
+    approval and offers the next flight; the one booked is the one highlighted. ASI:One keeps three options."""
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})
+    s = c.get("/state").json()
+    assert s["screen"]["lines"][1] == "Fix it for up to $300?"
+    # no: nothing is spent, and a tap brings the offer back
+    c.post("/input", json={"gesture": "swipe_down", "screen_id": "cancelled"})
+    s = c.get("/state").json()
+    assert s["screen"]["screen_id"] == "declined" and s["ledger"]["spends"] == [] and s["stage"] == "cancelled"
+    c.post("/input", json={"gesture": "press", "screen_id": "declined"})
+    assert c.get("/state").json()["screen"]["screen_id"] == "flight_list"
+    # swipe twice: Southwest is highlighted; the earlier approvals are withdrawn, not left pending
+    for _ in range(2):
+        c.post("/input", json={"gesture": "swipe_down", "screen_id": "flight_list"})
+    s = c.get("/state").json()
+    assert s["screen"]["lines"] == ["  Delta 9:15 PM $215", "  Alaska 9:45 PM $239", "> WN2210 10:00 PM $229"]
+    assert [a["status"] for a in s["approvals"]] == ["withdrawn", "withdrawn", "pending"]
+    assert s["pick"]["flight"] == "WN2210" and s["pick"]["chosen_by"] == "traveler"
+    c.post("/input", json={"gesture": "swipe_down", "screen_id": "flight_list"})  # wraps around to Delta
+    assert c.get("/state").json()["screen"]["lines"][0] == "> Delta 9:15 PM $215"
+    c.post("/input", json={"gesture": "swipe_down", "screen_id": "flight_list"})
+    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"})
+    assert [x["merchant"] for x in c.get("/ledger").json()["spends"]] == ["Alaska"]
+
+    # the proposed limit follows the fares and is capped
+    from app import main as engine
+    engine.S.raw_options = [{"price_usd": 480, "day": "today", "arrives": "22:00"}]
+    assert engine.propose_limit()["limit_usd"] == 550
+    assert engine.propose_limit(5000)["limit_usd"] == 1000 and engine.propose_limit(10)["limit_usd"] == 480
+
+    # ASI:One (POST /tasks) still gets the three options its cards are built on, straight to the booking
+    c.post("/demo/reset")
+    d = c.post("/tasks", json={"source": "asi1"}).json()
+    assert len(d["options"]) == 3 and d["pick"]["flight"] == "DL1946"
+    assert c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+    c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -769,6 +818,7 @@ CASES = [
     ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
     ("Trip claim: benefits pay back $66, code caps amounts, wearer submits", test_trip_claim),
     ("Claim API: long-poll until drafted, submit once, never another trip's claim", test_claim_api),
+    ("Budget consent at cancellation, a list of three flights, swipe to choose", test_budget_consent_and_list),
     ("Free mode: real flight, push-to-talk in any language, Start cancels that flight", test_free_mode),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"

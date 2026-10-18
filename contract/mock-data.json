@@ -57,6 +57,10 @@
       "mcc": "3058"
     }
   ],
+  "extra_options": [
+    {"id": "opt-alaska", "airline": "Alaska", "flight": "AS1290", "departs": "21:45", "arrives": "23:10", "day": "today", "price_usd": 239, "mcc": "4511"},
+    {"id": "opt-southwest", "airline": "Southwest", "flight": "WN2210", "departs": "22:00", "arrives": "23:25", "day": "today", "price_usd": 229, "mcc": "4511"}
+  ],
   "lodging": {
     "name": "Hayes St Guesthouse",
     "confirmation": "48213",
