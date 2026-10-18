@@ -60,6 +60,29 @@ class State:
         self.fee_allowance = 0.0
         self.outcome: dict | None = None
         self.screen: dict = ready_screen()
+        self.vault: list[dict] = seed_vault()
+
+
+def seed_vault() -> list[dict]:
+    """What the traveler saved before the trip (pre-seeded, per the SPEC). The flow adds to it."""
+    b, lodging = MOCK["booking"], MOCK["lodging"]
+    return [
+        {"id": "vlt-ua183", "type": "boarding_pass", "title": f"{b['airline']} {b['flight']} {b['from']}-{b['to']}",
+         "saved_at": None, "source": "traveler",
+         "data": {k: b[k] for k in ("airline", "flight", "from", "to", "date", "departs", "pnr")}},
+        {"id": "vlt-lodging", "type": "lodging_confirmation", "title": lodging["name"],
+         "saved_at": None, "source": "traveler",
+         "data": {"name": lodging["name"], "confirmation": lodging["confirmation"],
+                  "desk_closes": lodging["desk_closes"], "note": lodging["note"]}},
+    ]
+
+
+async def save_to_vault(type_: str, title: str, data: dict) -> dict:
+    item = {"id": f"vlt-{uuid.uuid4().hex[:8]}", "type": type_, "title": title,
+            "saved_at": now(), "source": "agent", "data": data}
+    S.vault.append(item)
+    await publish("vault.updated", {"type": type_, "id": item["id"], "title": title})
+    return item
 
 
 def ready_screen() -> dict:
@@ -107,6 +130,7 @@ def snapshot() -> dict:
         "approvals": list(S.approvals.values()),
         "outcome": S.outcome,
         "ledger": S.ledger.view(S.mandate),
+        "vault": S.vault,
         "call_mode": CALL_MODE,
     }
 
@@ -224,7 +248,12 @@ async def after_booking() -> None:
                              "status": "pending", "ts": now()})
     await publish("offer.declined", {"airline": offer["airline"], "flight": offer["flight"],
                                      "refund_usd": refund["amount_usd"], "status": "pending"})
-    await publish("vault.updated", {"type": "boarding_pass", "flight": p["flight"]})
+    paid = next((s for s in reversed(S.ledger.spends) if s["kind"] == "booking"), {})
+    b = MOCK["booking"]
+    await save_to_vault("boarding_pass", f"{p['airline']} {p['flight']} {b['from']}-{b['to']}", {
+        "airline": p["airline"], "flight": p["flight"], "from": b["from"], "to": b["to"], "date": b["date"],
+        "departs": p["departs"], "arrives": p["arrives"], "price_usd": p["price_usd"],
+        "payment_reference": paid.get("reference"), "replaces": b["flight"]})
     await show("booked", ["Booked · pass saved"])
     await asyncio.sleep(1.5)
     eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
@@ -268,17 +297,23 @@ async def mock_call_finish(approved: bool) -> None:
     script = MOCK["call_script_mock"]
     await finish_call({"held": approved, "fee_usd": script["fee_usd"] if approved else 0,
                        "door_code": script["door_code"] if approved else None,
-                       "contact": script["contact"], "verified": True}, None)
+                       "contact": script["contact"], "verified": True,
+                       "summary": "Simulated call: room held with a late check-in fee." if approved
+                       else "Simulated call: fee declined, room not held."}, None)
 
 
-async def finish_call(outcome: dict, transcript_url: str | None) -> None:
+async def finish_call(outcome: dict, transcript_url: str | None, transcript: str | None = None) -> None:
     S.outcome = outcome
     await publish("call.completed", {"outcome": outcome, "transcript_url": transcript_url,
                                      "verified": bool(outcome.get("verified"))})
     held, code = outcome.get("held"), outcome.get("door_code")
     await publish("task.resolved", {"flight": S.pick["flight"] if S.pick else None,
                                     "lodging": {"held": held, "door_code": code}})
-    await publish("vault.updated", {"type": "call_transcript"})
+    await save_to_vault("call_transcript", f"Call to {MOCK['lodging']['name']}", {
+        "held": held, "door_code": code, "contact": outcome.get("contact"), "fee_usd": outcome.get("fee_usd"),
+        "verified": bool(outcome.get("verified")), "summary": outcome.get("summary"),
+        "issues": outcome.get("issues", []), "transcript": transcript, "transcript_url": transcript_url,
+        "mode": CALL_MODE})
     S.stage = "resolved"
     screen_id = "resolved"
     if held and code and outcome.get("verified"):
@@ -520,7 +555,7 @@ async def call_completed(o: CallOutcome):
     outcome = o.model_dump(exclude={"transcript_url", "transcript"})
     if o.transcript:
         outcome = await verify.check_call(o.transcript, outcome)
-    await finish_call(outcome, o.transcript_url)
+    await finish_call(outcome, o.transcript_url, o.transcript)
     return {"ok": True, "outcome": outcome}
 
 
@@ -540,7 +575,7 @@ async def call_webhook(request: Request):
         transcript = call.transcript_text(data.get("transcript") or [])
 
         async def check_and_finish():
-            await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None)
+            await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None, transcript)
         run_later(check_and_finish())
     elif event.get("type") == "call_initiation_failure":
         run_later(call_failed("the call did not connect"))
@@ -576,6 +611,12 @@ async def merchant_payment(p: PaymentRequest):
 def tap_key_directory():
     """Public key merchants use to check the agent's signed payment requests."""
     return tap.directory()
+
+
+@app.get("/vault")
+def vault():
+    """The traveler's documents: pre-seeded ones plus what the agent saved during the flow."""
+    return {"items": S.vault}
 
 
 @app.get("/ledger")
