@@ -163,6 +163,22 @@ async def test_guardrails() -> None:
         orch.CALLER_ADDRESS = saved_addr
     ok("the Caller is not hired, or paid, while the engine already has a call in flight")
 
+    # right after the booking the engine is about to place its own call (stage "booked"):
+    # hiring the Caller then ran a simulated call that beat the real one (seen live)
+    real_snapshot = orch.snapshot
+
+    async def booked(_state):
+        return {"stage": "booked"}
+    orch.snapshot = booked
+    try:
+        ctx = Ctx()
+        res = await orch.run_tool(ctx, {"task_id": "task-x", "approval_id": None, "history": []},
+                                  "hire_caller", {"purpose": "hold the room"})
+    finally:
+        orch.snapshot = real_snapshot
+    assert res.get("not_hired") and ctx.sent == [], res
+    ok("the Caller is not hired between the booking and the engine's own call")
+
     # running the demo twice without a manual reset must still work
     s4 = {"task_id": None, "approval_id": None, "history": []}
     await orch.run_tool(Ctx(), s4, "get_booking", {})
