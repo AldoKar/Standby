@@ -35,6 +35,9 @@ ElevenLabs → Agents → Create agent → Blank. Name it `Handle It caller`.
 | Language | English |
 | Max conversation duration | 120 seconds (Advanced) |
 | System tools | Turn on **End call**, so the agent can hang up |
+| Background voice detection | On (Advanced), so chatter in the room isn't taken as the clerk talking |
+| Turn eagerness | Patient (Advanced) |
+| Interruptions | Off (Advanced), so noise can't cut the agent off mid-sentence; the prompt keeps its lines short |
 
 **Dynamic variables.** The first message uses `guest_name`, `confirmation` and `eta`; the engine also sends `task_id`. When you save, ElevenLabs lists them under dynamic variables. Give each a placeholder so test calls from the dashboard work:
 
