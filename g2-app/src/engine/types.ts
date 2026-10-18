@@ -24,8 +24,26 @@ export interface RankedOption {
   reason: string
 }
 
+export interface CallOutcome {
+  held: boolean
+  fee_usd?: number | null
+  door_code?: string | null
+  contact?: string | null
+  error?: string
+  verified?: boolean
+  summary?: string // one sentence from the transcript check (engine/app/verify.py)
+  issues?: string[] // warning signs found in the transcript
+}
+
 export interface EventData {
-  'state.snapshot': { task_id: string | null; stage: string; screen: EngineScreen }
+  'state.snapshot': {
+    task_id: string | null
+    stage: string
+    screen: EngineScreen
+    options?: RankedOption[]
+    outcome?: CallOutcome | null
+    call_mode?: 'mock' | 'elevenlabs'
+  }
   'hud.screen': EngineScreen
   'flight.cancelled': {
     flight: string
@@ -43,13 +61,9 @@ export interface EventData {
   'vault.updated': { type: 'boarding_pass' | 'call_transcript'; flight?: string }
   'cutoff.detected': { place: string; closes_at: string; arrival: string; eta: string }
   'call.started': { to: string; purpose: string; mode: 'mock' | 'elevenlabs' }
-  'call.completed': {
-    outcome: { held: boolean; fee_usd?: number; door_code?: string | null; contact?: string; error?: string }
-    transcript_url: string | null
-    verified: boolean
-  }
+  'call.completed': { outcome: CallOutcome; transcript_url: string | null; verified: boolean }
   'task.resolved': { flight: string | null; lodging: { held: boolean; door_code: string | null } }
-  'voice.heard': { screen_id: string; transcript: string; intent: string; confidence: number; via: string }
+  'voice.heard': { screen_id: string; transcript: string; intent: string; confidence: number; via: string; model?: string | null; note?: string | null }
   'demo.reset': Record<string, never>
 }
 
@@ -67,12 +81,34 @@ export interface InputResult {
   reason?: string // e.g. "stale screen: booking_offer, now fee_request"
 }
 
+/** GET /ledger (engine/app/policy.py Ledger.view). */
+export interface Ledger {
+  mandate: { instruction: string; budget_usd: number; ask_over_usd: number; token_id: string; label: string }
+  spent_usd: number
+  remaining_usd: number
+  refunds_pending_usd: number
+  net_cost_usd: number
+  spends: { amount: number; merchant: string; kind: string; reference: string; ts: string; signature?: { verified?: boolean } }[]
+  refunds: { amount: number; airline: string; status: string; rule?: string; ts: string }[]
+  consents: { approval_id: string; gesture: string; approved: boolean; amount: number; merchant: string; ts: string }[]
+  denied: { amount: number; merchant: string; reason: string; ts: string }[]
+}
+
+/** GET /tests: the last `python test_engine.py` run. */
+export interface TestsResult {
+  ran_at?: string
+  passed: number
+  total: number
+  cases: { name: string; passed: boolean; detail?: string }[]
+}
+
 /** POST /voice response. */
 export interface VoiceResult {
   transcript: string
   intent: string // one the screen allows, or "unknown"
   confidence: number
   via: 'keywords' | 'model' | 'none'
+  model?: string | null // which model answered (primary or fallback)
   gesture: Gesture | null
   handled: boolean
   confirm_required: boolean // a spend approval: the glasses must ask for a tap

@@ -13,17 +13,18 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import anthropic
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import call, policy, verify, voice
-from . import call, policy, tap, verify
+from . import agent, call, flights, policy, status, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,12 +56,16 @@ class State:
         self.mandate = policy.Mandate.from_dict(MOCK["mandate"])
         self.ledger = policy.Ledger()
         self.options: list[dict] = []
+        self.flights_source, self.flights_error = "mock", None
         self.pick: dict | None = None
         self.approvals: dict[str, dict] = {}
         self.fee_allowance = 0.0
         self.outcome: dict | None = None
         self.screen: dict = ready_screen()
         self.vault: list[dict] = seed_vault()
+        self.agent_log: list[dict] = []  # what Claude did this task: thoughts, tool calls, results
+        self.call_started = False
+        self.before_answer: dict | None = None  # the screen an /ask answer covered
 
 
 def seed_vault() -> list[dict]:
@@ -94,6 +99,11 @@ S = State()
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def fit(line: str, short: str) -> str:
+    """Glasses lines are at most 24 chars: long live airline names fall back to the flight number."""
+    return line if len(line) <= 24 else short
 
 
 def hhmm(t: str, ampm: bool = True) -> str:
@@ -131,6 +141,7 @@ def snapshot() -> dict:
         "outcome": S.outcome,
         "ledger": S.ledger.view(S.mandate),
         "vault": S.vault,
+        "agent": S.agent_log,
         "call_mode": CALL_MODE,
     }
 
@@ -139,15 +150,124 @@ def snapshot() -> dict:
 
 async def start_flow(source: str) -> None:
     S.task_id = f"task-{uuid.uuid4().hex[:8]}"
-    S.stage = "cancelled"
+    S.stage = "searching"
     b, offer = MOCK["booking"], MOCK["airline_offer"]
     await publish("flight.cancelled", {"flight": b["flight"], "route": f"{b['from']}-{b['to']}",
                                        "airline_offer": offer, "source": source})
-    S.options = policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])
-    S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
-    await publish("options.ranked", {"options": S.options})
+    await show("searching", [f"{b['flight']} cancelled", "Finding flights..."])
+    if not (agent.enabled() and await plan_with_agent(b)):
+        await search(b["from"], b["to"])
+        S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
+    await publish("options.ranked", {"options": S.options, "source": S.flights_source, "error": S.flights_error,
+                                      "chosen_by": "agent" if S.pick and S.pick.get("chosen_by") == "agent" else "policy"})
     await show("cancelled", [f"{b['flight']} cancelled", f"{offer['airline']}: {hhmm(offer['departs'])} tmrw", "Tap = fix it"],
                {"press": "fix"})
+    S.stage = "cancelled"
+
+
+# ponytail: fixed PDT offset (the demo is in LA in October); zoneinfo if it ever runs elsewhere.
+LA = timezone(timedelta(hours=-7))
+
+
+async def find_options(origin: str, dest: str, date: str | None = None) -> tuple[list[dict], str, str | None]:
+    """The airline's free rebooking plus live Duffel fares; mock fares if Duffel is off or fails."""
+    if not flights.enabled():
+        return MOCK["options"], "mock", None
+    now_la = datetime.now(LA)
+    today = now_la.date().isoformat()
+    try:
+        live = await flights.search(origin, dest, date or today, today)
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError, IndexError) as e:
+        return MOCK["options"], "mock", f"duffel: {e}"[:300]
+    if not flights.test_mode() and (date or today) == today:  # test-mode schedules are made up
+        live = [o for o in live if o["departs"] > now_la.strftime("%H:%M")]
+    return [MOCK["options"][0], *live], "duffel", None
+
+
+async def search(origin: str, dest: str, date: str | None = None) -> list[dict]:
+    """Search and rank; the ranked options become the task's options."""
+    options, S.flights_source, S.flights_error = await find_options(origin, dest, date)
+    S.options = policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"])
+    return S.options
+
+
+# ---------- Claude as the agent (AGENT_MODE=claude) ----------
+
+async def agent_step(step: dict) -> None:
+    S.agent_log.append({**step, "ts": now()})
+    await publish("agent.step", step)
+
+
+async def run_agent(phase: str, facts: dict, tools: dict) -> bool:
+    """True if Claude finished the phase; False (and logged) if it failed, so the scripted flow takes over."""
+    try:
+        said = await agent.run(phase, facts, tools, agent_step)
+    except (anthropic.APIError, RuntimeError, TimeoutError, ValueError, KeyError) as e:
+        await publish("agent.failed", {"phase": phase, "error": str(e)[:300]})
+        return False
+    await publish("agent.done", {"phase": phase, "text": said})
+    S.agent_log.append({"phase": phase, "kind": "done", "text": said, "ts": now()})
+    return True
+
+
+async def flight_status(flight: str) -> dict:
+    """The trip's own flights (demo data) answer from the trip; any other flight is live from FlightAware."""
+    f, b = flight.replace(" ", "").upper(), MOCK["booking"]
+    if f == b["flight"]:
+        cancelled = S.task_id is not None
+        return {"flight": f, "airline": b["airline"], "route": f"{b['from']}-{b['to']}", "date": b["date"],
+                "status": "cancelled" if cancelled else "scheduled", "scheduled_departure": b["departs"],
+                "airline_rebooking": MOCK["airline_offer"] if cancelled else None, "source": "trip"}
+    o = next((o for o in [*S.options, *MOCK["options"]] if o["flight"] == f), None)
+    if o:
+        booked = S.pick is not None and S.pick["flight"] == f and S.stage not in ("cancelled", "offer", "searching")
+        return {"flight": f, "airline": o["airline"], "route": f"{b['from']}-{b['to']}", "day": o["day"],
+                "status": "booked for the traveler" if booked else "scheduled",
+                "scheduled_departure": o["departs"], "scheduled_arrival": o["arrives"], "source": "trip"}
+    if not status.enabled():
+        return {"flight": f, "status": "unknown (no live status configured)"}
+    try:
+        return await status.fetch(f)
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        return {"flight": f, "status": "unavailable", "error": str(e)[:200]}
+
+
+async def read_vault(_: dict | None = None) -> dict:
+    return {"items": [{"type": v["type"], "title": v["title"], "data": v["data"]} for v in S.vault]}
+
+
+def brief(o: dict) -> dict:
+    return {k: o.get(k) for k in ("id", "airline", "flight", "departs", "arrives", "day", "stops", "price_usd",
+                                  "verdict", "reason")}
+
+
+async def plan_with_agent(b: dict) -> bool:
+    """Claude checks the flight, searches and chooses. False if it failed (the scripted plan runs instead)."""
+    async def search_flights(i: dict) -> dict:
+        found = await search(i["origin"].upper(), i["destination"].upper(), i.get("date"))
+        return {"source": S.flights_source, "options": [brief(o) for o in found]}
+
+    async def choose_flight(i: dict) -> dict:
+        o = next((o for o in S.options if o["id"] == i["option_id"]), None)
+        if not o:
+            return {"error": f"no option {i['option_id']}; search first"}
+        if o["verdict"] == "rejected":
+            return {"refused": f"policy rejected it: {o['reason']}"}
+        for x in S.options:
+            x["verdict"] = "ok" if x["verdict"] == "pick" else x["verdict"]
+        o.update(verdict="pick", chosen_by="agent", agent_reason=i["reason"])
+        S.pick = o
+        return {"chosen": f"{o['airline']} {o['flight']}", "next": "the traveler approves the booking on the glasses"}
+
+    S.pick = None
+    facts = {"traveler": MOCK["traveler"]["name"], "now": datetime.now(LA).isoformat(timespec="minutes"),
+             "cancelled_booking": b, "mandate": S.mandate.instruction, "budget_left_usd": S.ledger.remaining(S.mandate),
+             "deadline": MOCK["deadline"]}
+    ok = await run_agent("plan", facts, {"check_flight_status": lambda i: flight_status(i["flight"]), "search_flights": search_flights,
+                                         "read_vault": read_vault, "choose_flight": choose_flight})
+    if ok and not S.options:  # finished without searching: rank anyway so the glasses have options
+        await search(b["from"], b["to"])
+    return ok
 
 
 async def offer_pick() -> dict | None:
@@ -159,7 +279,8 @@ async def offer_pick() -> dict | None:
     return await request_spend(
         "booking", p["price_usd"], p["airline"], p["mcc"], f"{p['airline']} {p['flight']} tonight",
         screen=("booking_offer",
-                [f"{p['airline']} tonight {hhmm(p['departs'])}", f"${p['price_usd']} · lands {hhmm(p['arrives'], False)}", "Hold to book"],
+                [fit(f"{p['airline']} tonight {hhmm(p['departs'])}", f"{p['flight']} tonight {hhmm(p['departs'])}"),
+                 f"${p['price_usd']} · lands {hhmm(p['arrives'], False)}", "Hold to book"],
                 {"hold": "approve", "swipe_down": "other"}),
     )
 
@@ -240,6 +361,16 @@ async def after_answer(a: dict) -> None:
             run_later(mock_call_finish(a["status"] == "approved"))
 
 
+async def book_pick(p: dict) -> dict:
+    """A real Duffel order for a live fare; mock fares (or a failed order) get none."""
+    if p.get("source") != "duffel":
+        return {"source": "mock", "order_id": None, "pnr": None}
+    try:
+        return await flights.book(p)
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as e:
+        return {"source": "duffel", "order_id": None, "pnr": None, "error": f"{e}"[:300]}
+
+
 async def after_booking() -> None:
     p, offer, lodging = S.pick, MOCK["airline_offer"], MOCK["lodging"]
     S.stage = "booked"
@@ -250,12 +381,50 @@ async def after_booking() -> None:
                                      "refund_usd": refund["amount_usd"], "status": "pending"})
     paid = next((s for s in reversed(S.ledger.spends) if s["kind"] == "booking"), {})
     b = MOCK["booking"]
+    order = await book_pick(p)
+    await publish("flight.booked", {"airline": p["airline"], "flight": p["flight"], **order})
     await save_to_vault("boarding_pass", f"{p['airline']} {p['flight']} {b['from']}-{b['to']}", {
         "airline": p["airline"], "flight": p["flight"], "from": b["from"], "to": b["to"], "date": b["date"],
         "departs": p["departs"], "arrives": p["arrives"], "price_usd": p["price_usd"],
-        "payment_reference": paid.get("reference"), "replaces": b["flight"]})
-    await show("booked", ["Booked · pass saved"])
+        "payment_reference": paid.get("reference"), "replaces": b["flight"],
+        "pnr": order.get("pnr"), "order_id": order.get("order_id"), "booked_via": order["source"]})
+    await show("booked", [f"Booked · PNR {order['pnr']}", "Pass saved"] if order.get("pnr") else ["Booked · pass saved"])
     await asyncio.sleep(1.5)
+    if agent.enabled() and await arrival_with_agent():
+        if not S.call_started:  # Claude decided no call is needed
+            S.stage = "resolved"
+            await publish("task.resolved", {"flight": p["flight"], "lodging": None})
+            await show("resolved", ["All set", "No call needed"], {"press": "dismiss"}, 10)
+        return
+    if not S.call_started:
+        await call_lodging()
+
+
+async def arrival_with_agent() -> bool:
+    """Claude checks the arrival against the lodging and decides whether to call. False if it failed."""
+    p, lodging = S.pick, MOCK["lodging"]
+
+    async def check_arrival(_: dict) -> dict:
+        eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
+        return {"flight": f"{p['airline']} {p['flight']}", "lands": p["arrives"], "lands_day": p["day"],
+                "lodging": lodging["name"], "confirmation": lodging["confirmation"], "note": lodging["note"],
+                "travel_minutes": lodging["travel_minutes_from_airport"], "eta_at_lodging": eta,
+                "desk_closes": lodging["desk_closes"], "arrives_after_desk_closes": eta > lodging["desk_closes"]}
+
+    async def call_lodging_tool(i: dict) -> dict:
+        if S.call_started:
+            return {"error": "already called"}
+        S.call_started = True
+        run_later(call_lodging(i.get("reason")))
+        return {"status": "calling", "next": "the outcome reaches the traveler when the call ends"}
+
+    facts = {"traveler": MOCK["traveler"]["name"], "booked_flight": brief(p), "lodging": lodging["name"]}
+    return await run_agent("arrival", facts, {"check_arrival": check_arrival, "call_lodging": call_lodging_tool})
+
+
+async def call_lodging(reason: str | None = None) -> None:
+    p, lodging = S.pick, MOCK["lodging"]
+    S.call_started = True
     eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
     await publish("cutoff.detected", {"place": lodging["name"], "closes_at": lodging["desk_closes"],
                                       "arrival": p["arrives"], "eta": eta})
@@ -264,7 +433,8 @@ async def after_booking() -> None:
     S.stage = "calling"
     variables = {"guest_name": MOCK["traveler"]["name"], "confirmation": lodging["confirmation"],
                  "eta": hhmm(eta), "task_id": S.task_id}
-    await publish("call.started", {"to": lodging["name"], "purpose": "hold the room for a late arrival", "mode": CALL_MODE})
+    await publish("call.started", {"to": lodging["name"], "purpose": reason or "hold the room for a late arrival",
+                                   "mode": CALL_MODE})
     if CALL_MODE == "elevenlabs":
         try:
             await start_call(variables)
@@ -379,7 +549,9 @@ async def input_(g: Gesture):
     # (dashboard buttons) keep working as before.
     if g.screen_id and g.screen_id != S.screen["screen_id"]:
         return {"handled": False, "stage": stage, "reason": f"stale screen: {g.screen_id}, now {S.screen['screen_id']}"}
-    if gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
+    if gesture == "press" and S.screen["screen_id"] == "answer":
+        await restore_screen(S.before_answer)
+    elif gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
     elif gesture == "press" and stage == "resolved":
         await show("idle", [], {})
@@ -392,13 +564,68 @@ async def input_(g: Gesture):
         if not a:
             return {"handled": False, "stage": stage}
         if stage == "offer" and gesture == "swipe_down":
-            await show("only_option", ["Only option tonight", f"{S.pick['airline']} {hhmm(S.pick['departs'])}", "Hold to book"],
+            await show("only_option", ["Only option tonight", fit(f"{S.pick['airline']} {hhmm(S.pick['departs'])}", f"{S.pick['flight']} {hhmm(S.pick['departs'])}"), "Hold to book"],
                        {"hold": "approve"})
         else:
             await answer(a["approval_id"], gesture == "hold", "glasses")
     else:
         return {"handled": False, "stage": stage}
     return {"handled": True, "stage": S.stage}
+
+
+class Ask(BaseModel):
+    question: str
+    show: bool = True  # put the short answer on the glasses
+
+
+ANSWER_S = 10
+
+
+async def restore_screen(prev: dict, after_s: float = 0) -> None:
+    """Put back what the glasses showed before an answer, unless something newer replaced it."""
+    await asyncio.sleep(after_s)
+    if S.screen["screen_id"] == "answer":
+        S.screen = prev
+        await publish("hud.screen", S.screen)
+
+
+@app.post("/ask")
+async def ask(q: Ask):
+    """A free question to the agent: flight status, vault, spending, what it's doing. Read-only tools:
+    it never books, pays or calls. The short answer goes on the glasses unless a spend is waiting."""
+    question = q.question.strip()[:500]
+    if not question:
+        raise HTTPException(400, "empty question")
+    if not agent.enabled():
+        raise HTTPException(503, "needs AGENT_MODE=claude and ANTHROPIC_API_KEY")
+
+    async def read_ledger(_: dict) -> dict:
+        return S.ledger.view(S.mandate)
+
+    async def read_task(_: dict) -> dict:
+        return {"stage": S.stage, "task_id": S.task_id, "pick": S.pick and brief(S.pick), "outcome": S.outcome,
+                "glasses_show": S.screen["lines"]}
+
+    first = len(S.agent_log)
+    facts = {"question": question, "traveler": MOCK["traveler"]["name"],
+             "now": datetime.now(LA).isoformat(timespec="minutes")}
+    try:
+        out = json.loads(await agent.run("ask", facts, {
+            "read_vault": read_vault, "check_flight_status": lambda i: flight_status(i["flight"]),
+            "read_ledger": read_ledger, "read_task": read_task}, agent_step))
+    except (anthropic.APIError, RuntimeError, TimeoutError, ValueError, KeyError) as e:
+        await publish("agent.failed", {"phase": "ask", "error": str(e)[:300]})
+        raise HTTPException(502, f"agent failed: {e}"[:300])
+    lines = [line[:24] for line in out["glasses"][:3]] or ["No answer"]
+    await publish("agent.answer", {"question": question, "answer": out["answer"], "glasses": lines})
+    shown = q.show and S.stage not in ("offer", "fee")  # never cover a screen that's waiting for a gesture
+    if shown:
+        prev = S.screen if S.screen["screen_id"] != "answer" else S.before_answer
+        S.before_answer = prev
+        await show("answer", lines, {"press": "dismiss"}, ANSWER_S)
+        run_later(restore_screen(prev, ANSWER_S))
+    return {"question": question, "answer": out["answer"], "glasses": lines, "shown": shown,
+            "steps": S.agent_log[first:]}
 
 
 class VoiceInput(BaseModel):
@@ -414,8 +641,8 @@ async def voice_(v: VoiceInput):
     through the same path as a gesture. An approval of a spend is never applied by voice: it returns
     confirm_required and the wearer taps to confirm (the spend still goes through policy.py)."""
     def reply(**kw) -> dict:
-        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "gesture": None,
-                "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
+        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "model": None,
+                "gesture": None, "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
         return {**base, **kw}
 
     if v.screen_id != S.screen["screen_id"]:  # check before paying for speech-to-text
@@ -434,13 +661,16 @@ async def voice_(v: VoiceInput):
     else:
         return reply(reason="no audio")
 
-    intent, confidence, via = await voice.classify(transcript, v.screen_id, S.screen["lines"])
+    intent, confidence, via, model, note = await voice.classify(transcript, v.screen_id, S.screen["lines"])
     gesture = voice.intents_for(v.screen_id).get(intent)
     await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript, "intent": intent,
-                                  "confidence": confidence, "via": via})
-    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture)
+                                  "confidence": confidence, "via": via, "model": model, "note": note})
+    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture,
+                   model=model)
     if not gesture:
-        return {**result, "reason": "didn't match a command on this screen"}
+        # A model failure must read as a failure ("intent model failed: …"), never as "didn't understand".
+        failed = note and (note.startswith("intent model failed") or note.startswith("voice not configured"))
+        return {**result, "reason": note if failed else "didn't match a command on this screen"}
     if voice.needs_tap(v.screen_id, intent):
         return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
     # The screen may have changed while we were transcribing; /input checks screen_id again.
@@ -631,8 +861,10 @@ def set_mandate(fields: dict):
 
 
 @app.get("/flights/search")
-def flights_search():
-    return {"options": policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])}
+async def flights_search():
+    options, source, error = await find_options(MOCK["booking"]["from"], MOCK["booking"]["to"])
+    return {"options": policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"]),
+            "source": source, "error": error}
 
 
 @app.get("/tests")

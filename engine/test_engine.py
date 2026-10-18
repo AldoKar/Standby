@@ -8,6 +8,8 @@ os.environ.setdefault("MOCK_CALL_END_S", "0.2")
 # Never place real calls from the tests, even if engine/.env says CALL_MODE=elevenlabs
 # (app/__init__ loads .env, but variables already set here win).
 os.environ["CALL_MODE"] = "mock"
+os.environ["FLIGHTS_MODE"] = "mock"  # nor real flight orders
+os.environ["AGENT_MODE"] = "off"  # nor Claude calls (test_agent stubs it)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -283,6 +285,66 @@ def test_voice_commands(c):
     c.post("/demo/reset")
 
 
+def test_voice_model_fallback(c):
+    """Jev first; Haiku only when Jev fails or isn't sure; a failure is never reported as "didn't understand".
+    The models are stubbed: no network, no cost."""
+    import asyncio
+    from app import voice
+
+    calls = []
+    lines = ["Delta tonight 9:15 PM", "$215 · lands 10:40"]
+    allowed = voice.intents_for("booking_offer")
+    phrase = "Yeah thanks, book it for me please."  # too long for the keyword path
+    real = (voice._ask, voice.INTENT_MODEL, voice.FALLBACK_MODEL, os.environ.get("OPENROUTER_API_KEY"))
+    os.environ["OPENROUTER_API_KEY"] = "test-key"
+    voice.INTENT_MODEL, voice.FALLBACK_MODEL = "typesafe/jev-1.14", "anthropic/claude-haiku-4.5"
+
+    def stub(answers):
+        async def ask(model, transcript, lines_, allowed_):
+            calls.append(model)
+            a = answers[model]
+            if isinstance(a, Exception):
+                raise a
+            return a
+        voice._ask = ask
+
+    try:
+        assert voice.is_decisions_model("typesafe/jev-1.14") and not voice.is_decisions_model("anthropic/claude-haiku-4.5")
+        # 1. Jev answers confidently: Haiku is never called
+        calls.clear(); stub({"typesafe/jev-1.14": ("approve", 0.97)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[:2] == ("approve", 0.97) and r[3] == "typesafe/jev-1.14" and calls == ["typesafe/jev-1.14"]
+        # 2. Jev errors (e.g. HTTP 400): Haiku answers, the note says why
+        calls.clear(); stub({"typesafe/jev-1.14": voice.IntentError("typesafe/jev-1.14: HTTP 400"),
+                             "anthropic/claude-haiku-4.5": ("approve", 0.95)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "approve" and r[3] == "anthropic/claude-haiku-4.5" and "HTTP 400" in r[4]
+        # 3. Jev unsure: Haiku gets a say
+        calls.clear(); stub({"typesafe/jev-1.14": ("approve", 0.4), "anthropic/claude-haiku-4.5": ("approve", 0.9)})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "approve" and calls == ["typesafe/jev-1.14", "anthropic/claude-haiku-4.5"]
+        # 4. Both fail: unknown, and the reason reaches the glasses as a failure
+        stub({"typesafe/jev-1.14": voice.IntentError("jev down"), "anthropic/claude-haiku-4.5": voice.IntentError("haiku down")})
+        r = asyncio.run(voice.classify(phrase, "booking_offer", lines))
+        assert r[0] == "unknown" and r[4].startswith("intent model failed")
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "press"})
+        reply = c.post("/voice", json={"screen_id": "booking_offer", "transcript": phrase}).json()
+        assert reply["intent"] == "unknown" and reply["reason"].startswith("intent model failed")
+        # 5. The keyword path still answers instantly, no model at all
+        calls.clear()
+        assert asyncio.run(voice.classify("okay", "booking_offer", lines))[:3] == ("approve", 1.0, "keywords")
+        assert calls == []
+    finally:
+        voice._ask, voice.INTENT_MODEL, voice.FALLBACK_MODEL = real[0], real[1], real[2]
+        if real[3] is None:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            os.environ["OPENROUTER_API_KEY"] = real[3]
+        c.post("/demo/reset")
+
+
 def test_signed_payments(c):
     """Every spend carries a TAP-style signature the merchant can check; tampering breaks it."""
     import base64
@@ -369,6 +431,143 @@ def test_real_call_fee_screen(c):
         c.post("/demo/reset")
 
 
+def test_live_flights(c):
+    """FLIGHTS_MODE=duffel: live fares are ranked with the airline's offer, the booking creates an
+    order and its PNR reaches the glasses and the Vault; a Duffel error falls back to mock fares.
+    No network: flights.search/book are stubbed."""
+    from app import flights
+
+    live = {"id": "off_1", "offer_id": "off_1", "source": "duffel", "airline": "Duffel Airways", "flight": "ZZ100",
+            "departs": "23:58", "arrives": "23:59", "day": "today", "stops": 0, "price_usd": 120,
+            "currency": "USD", "total_amount": "120.00", "passenger_id": "pas_1", "mcc": "4511"}
+
+    async def search(*_):
+        return [live]
+
+    async def book(option):
+        assert option["offer_id"] == "off_1"
+        return {"order_id": "ord_1", "pnr": "X7K2QZ", "source": "duffel"}
+
+    async def broken(*_):
+        raise RuntimeError("duffel 500: down")
+    real = (flights.enabled, flights.search, flights.book)
+    flights.enabled, flights.search, flights.book = (lambda: True), search, book
+    try:
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        s = c.get("/state").json()
+        assert [o["verdict"] for o in s["options"]] == ["rejected", "pick"] and s["pick"]["flight"] == "ZZ100"
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "hold"})
+        wait_for(c, "calling")
+        assert c.get("/vault").json()["items"][2]["data"]["pnr"] == "X7K2QZ"
+
+        flights.search = broken
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        assert c.get("/state").json()["pick"]["flight"] == "DL1946"
+    finally:
+        flights.enabled, flights.search, flights.book = real
+        c.post("/demo/reset")
+
+
+def test_agent_decides(c):
+    """AGENT_MODE=claude: Claude's tool calls drive the plan and the arrival call, but policy has the
+    last word (a rejected option is refused). No network: agent.run is replaced by a scripted Claude."""
+    from app import agent
+
+    async def fake_claude(phase, facts, tools, on_step):
+        async def use(name, **i):
+            out = await tools[name](i)
+            await on_step({"phase": phase, "kind": "tool", "tool": name, "input": i, "result": out, "error": False})
+            return out
+        if phase == "plan":
+            assert (await use("check_flight_status", flight="UA183"))["status"] == "cancelled"
+            found = await use("search_flights", origin="LAX", destination="SFO", date="2026-10-18")
+            ids = {o["airline"]: o["id"] for o in found["options"]}
+            assert "refused" in await use("choose_flight", option_id=ids["American"], reason="nonstop")  # over budget
+            assert "chosen" in await use("choose_flight", option_id=ids["Delta"], reason="arrives tonight in budget")
+            return "Picked Delta DL1946: lands 10:40 PM, $215."
+        assert (await use("check_arrival"))["arrives_after_desk_closes"] is True
+        await use("call_lodging", reason="desk closes before the traveler arrives")
+        assert "error" in await use("call_lodging", reason="again")  # one call only
+        return "Calling the guesthouse to hold the room."
+
+    real = (agent.enabled, agent.run)
+    agent.enabled, agent.run = (lambda: True), fake_claude
+    try:
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        s = c.get("/state").json()
+        assert s["pick"]["flight"] == "DL1946" and s["pick"]["chosen_by"] == "agent"
+        assert [x["tool"] for x in s["agent"] if x["kind"] == "tool"][:4] == [
+            "check_flight_status", "search_flights", "choose_flight", "choose_flight"]
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "hold"})
+        s = wait_for(c, "fee")  # Claude called the guesthouse; the mock clerk asks for the fee
+        assert any(x["kind"] == "done" and x["phase"] == "arrival" for x in s["agent"])
+
+        async def broken(*_):
+            raise RuntimeError("model down")
+        agent.run = broken  # Claude fails: the scripted flow takes over
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        assert c.get("/state").json()["pick"]["flight"] == "DL1946"
+    finally:
+        agent.enabled, agent.run = real
+        c.post("/demo/reset")
+
+
+def test_ask(c):
+    """POST /ask: Claude answers with read-only tools; trip flights come from the trip, others from
+    FlightAware; the answer shows on the glasses and a tap puts the old screen back, but it never
+    covers a screen waiting for a gesture. No network: agent.run and status.fetch are stubbed."""
+    import json as j
+
+    from app import agent, status
+
+    seen = {}
+
+    async def fake_claude(phase, facts, tools, on_step):
+        assert phase == "ask" and set(tools) == {"read_vault", "check_flight_status", "read_ledger", "read_task"}
+        for f in ("UA183", "DL1946", "UA1"):
+            seen[f] = await tools["check_flight_status"]({"flight": f})
+        seen["vault"] = await tools["read_vault"]({})
+        seen["ledger"] = await tools["read_ledger"]({})
+        return j.dumps({"answer": "UA1 is delayed 89 minutes, gate G1.", "glasses": ["UA1 delayed 89 min", "Gate G1"]})
+
+    async def live(flight):
+        return {"flight": flight, "status": "Delayed", "gate": "G1", "source": "flightaware"}
+
+    real = (agent.enabled, agent.run, status.enabled, status.fetch)
+    agent.enabled, agent.run, status.enabled, status.fetch = (lambda: True), fake_claude, (lambda: True), live
+    try:
+        c.post("/demo/reset")
+        r = c.post("/ask", json={"question": "Is UA1 on time?"}).json()
+        assert r["glasses"] == ["UA1 delayed 89 min", "Gate G1"] and r["shown"]
+        assert seen["UA183"]["status"] == "scheduled" and seen["DL1946"]["source"] == "trip"
+        assert seen["UA1"]["source"] == "flightaware" and seen["ledger"]["remaining_usd"] == 300
+        assert len(seen["vault"]["items"]) == 2
+        assert c.get("/state").json()["screen"]["screen_id"] == "answer"
+        c.post("/input", json={"gesture": "press"})  # dismiss: back to ready, the flow didn't start
+        s = c.get("/state").json()
+        assert s["screen"]["screen_id"] == "ready" and s["stage"] == "ready"
+
+        agent.enabled = lambda: False  # scripted plan for this part; /ask itself is still stubbed below
+        for g in ("press", "press"):  # booking offer waiting for a hold
+            c.post("/input", json={"gesture": g})
+        agent.enabled = lambda: True
+        r = c.post("/ask", json={"question": "Status of UA183?"}).json()
+        assert not r["shown"] and c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+        assert seen["UA183"]["status"] == "cancelled"
+
+        agent.enabled = lambda: False
+        assert c.post("/ask", json={"question": "hi"}).status_code == 503
+    finally:
+        agent.enabled, agent.run, status.enabled, status.fetch = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -381,9 +580,13 @@ CASES = [
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
+    ("Voice: Jev first, Haiku fallback, failures reported", test_voice_model_fallback),
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
     ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
+    ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
+    ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
+    ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 

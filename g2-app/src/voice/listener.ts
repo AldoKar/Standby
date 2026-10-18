@@ -47,7 +47,7 @@ function applyResult(r: VoiceResult, screen: HudScreen, gen: number, ms: number)
     setTimeout(() => setVoice(gen, live ? 'listening' : undefined), HANDLED_FALLBACK_MS)
   } else if (r.reason?.startsWith('stale screen')) {
     // the next hud.screen is on its way
-  } else if (r.reason && /not configured|transcription failed/.test(r.reason)) {
+  } else if (r.reason && /not configured|transcription failed|intent model failed/.test(r.reason)) {
     flash(gen, 'offline')
   } else {
     flash(gen, 'missed')
