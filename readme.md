@@ -1,340 +1,195 @@
+![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
+![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
+
 # Standby
 
-> **Most AI assistants stop when there isn't an API. Standby picks up the phone.**
+> **Your flight just got cancelled at 9 PM. Standby fixes the rest of your night.**
 
-Standby is an AI travel agent that lives on your **Even G2** glasses. It books your trip, guides you at the airport and, when something goes wrong, fixes it — searching alternatives, asking for your approval with a single tap, paying securely, and **calling the airline on your behalf** when there's no API.
+Standby is an AI travel agent on your **Even G2** glasses and in **ASI:One**. When your flight is cancelled it finds a way home tonight, asks you once for a spending limit, lets you pick a flight with a swipe, books it, **phones the guesthouse** to hold your room (real call, there's no API for that), checks what the clerk actually said, and claims back what your card's travel benefits cover. You approve every spend with a tap; code, not the model, decides what money can move.
 
 Built at the **LA Hacks AI Hackathon 2026** (Oct 17–18).
 
-**Tracks:** Even Realities · Fetch.ai · Visa · MLH ElevenLabs · MLH Vultr
+**Tracks:** Fetch.ai (ASI:One Agent Challenge) · Even Realities · Visa · MLH ElevenLabs · MLH Vultr
 
 ---
 
-## Table of contents
+## Contents
 
-1. [How it works](#how-it-works)
-2. [Architecture](#architecture)
-3. [Repository structure](#repository-structure)
-4. [Shared contract](#shared-contract) ← **read this before writing code**
-5. [Demo event sequence](#demo-event-sequence)
-6. [Mock data](#mock-data)
-7. [Guardrails](#guardrails)
-8. [Getting started](#getting-started)
-9. [Install and run on G2](#install-and-run-on-g2)
-10. [Team](#team)
+1. [The demo in one minute](#the-demo-in-one-minute)
+2. [What's real and what's simulated](#whats-real-and-whats-simulated)
+3. [Fetch.ai agents](#fetchai-agents)
+4. [Architecture](#architecture)
+5. [Run it locally](#run-it-locally)
+6. [Install and run on G2](#install-and-run-on-g2)
+7. [Configuration](#configuration)
+8. [Tests](#tests)
+9. [Trust and safety](#trust-and-safety)
+10. [Repository](#repository)
+11. [Team](#team)
 
 ---
 
-## How it works
+## The demo in one minute
 
-A trip in three acts, powered by one engine: **search → approve with a tap → pay → save**.
+| Step | On the glasses | What the agent does |
+|---|---|---|
+| Before the trip | `Ready / Tap = start, Hold = ask` | Your flight is a real LAX→SFO flight from FlightAware. Hold and ask anything, in any language: "Is my flight on time?" |
+| Cancelled | `UA183 cancelled / Fix it for up to $300? / Tap = yes, Swipe = no` | Claude checks the flight, searches tonight's flights, picks one and proposes a spending limit from the real fares, with its reasoning |
+| Choose | `→ Delta 9:15 PM $215` · `Alaska 9:45 PM $239` · `WN2210 10:00 PM $229` | Up to three flights that fit the limit. Swipe to move, tap twice to book. Policy re-checks the spend; the payment is signed |
+| Call | `Desk closes 11:00 PM / You land 10:40 / Calling guesthouse` | Claude sees you'll arrive after the desk closes and decides to call. An ElevenLabs voice agent phones the guesthouse |
+| Mid-call fee | `+$40 late check-in / Hold = OK, Swipe = no` | The clerk asks for a fee; you approve it on the glasses while the call is live |
+| Outcome | `Room held / Door code 4417` | Claude reads the transcript; the door code is shown only if the clerk really said it |
+| Money back | `Trip claim ready / $66 back expected / Tap = submit` | Claude drafts a travel-benefit claim from your receipts ($215 − $189 airline refund + $40 fee); code checks every dollar. Net cost of the cancellation: $0 |
 
-| Act | What the user experiences |
+The same flow runs from a chat in [ASI:One](https://asi1.ai), with interactive cards for the options, the review and the result.
+
+## What's real and what's simulated
+
+| Real | Simulated (and labeled so) |
 |---|---|
-| **1. Book** | "Get me to SF tomorrow before 10 PM, max $250." The agent compares flights and shows the best one on the HUD. Tap → paid with Visa → boarding pass saved to the Vault. |
-| **2. Guide** | HUD alerts at the airport: `Gate changed: 52 → 61`, `Boarding in 20 min`. |
-| **3. Resolve** | Flight cancelled → the alert appears on the HUD → tap → the agent finds an alternative → tap to approve → it pays, **calls the airline** and confirms → `✓ Rebooked`. |
+| Claude (Opus 5.5) planning with tools: checks the flight, searches, chooses, proposes the limit, decides whether to call, drafts the claim | The cancellation itself (we can't cancel a real flight on stage) |
+| Live flight status and the traveler's real flight (FlightAware AeroAPI) | The alternative flights in the demo (`FLIGHTS_MODE=mock`) |
+| Flight search and test-mode orders with a PNR (Duffel, `FLIGHTS_MODE=duffel`) | Money: payments are signed and checked, but no funds move |
+| A real outbound phone call (ElevenLabs + Twilio), verified against its transcript | Travel-benefit terms and claim submission (no public Visa claims API; see [`docs/TRAVEL-CLAIMS.md`](docs/TRAVEL-CLAIMS.md)) |
+| Agent-to-agent hiring over the Fetch.ai Payment Protocol | FET settlement between agents (the handshake is real; the wallets are unfunded) |
+| Ed25519 request signatures modeled on Visa's Trusted Agent Protocol, with a public key directory | The merchant that verifies them (the engine plays it) |
 
----
+## Fetch.ai agents
+
+| Agent | Name | Address | Job |
+|---|---|---|---|
+| Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the traveler's mandate with Claude, calls the engine, shows interactive cards |
+| Caller | `standby-caller` | `agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07` | Places disclosed AI phone calls to businesses with no API; hired and paid $1.99 per call over the Agent Payment Protocol |
+
+- **Chat Protocol:** `AgentChatProtocol 0.3.0`. **Payment Protocol:** `AgentPaymentProtocol 0.1.0`.
+- **Try it in ASI:One:** shared chat with the whole flow: https://asi1.ai/shared-chat/ab2f568d-d49e-4ec4-a279-5bb77195afbd
+- Details, versions and how to run the agents: [`agents/README.md`](agents/README.md).
 
 ## Architecture
 
 ```
-G2 glasses (mic + HUD + tap)
-        ⇅  Bluetooth
-Even Hub app (WebView on the phone)
-        ⇅  HTTPS / SSE
-FastAPI backend (Vultr) ──► Web dashboard (activity feed + HUD mirror)
-  · Guardrails ($250 limit, approval required)
-  · Event bus (SSE)
-  · Vault (Supabase)
-        ⇅  REST
-Standby Agent (Agentverse + Claude)  ◄── ASI:One (chat)
-        ▲  ctx.send
-Monitor Agent (Agentverse, reactive)
-        │
-Tools: Vault · Flights · Visa payment · ElevenLabs ──☎──► Airline (simulated)
+ Even G2 glasses ──┐                         ┌── ASI:One chat
+ (HUD, tap, mic)   │                         │
+ g2-app (Even Hub) │                         │  standby (orchestrator, Agentverse)
+                   │                         │      │ hires, pays $1.99 (Payment Protocol)
+                   ▼                         ▼      ▼
+              ┌───────────── engine (FastAPI on Vultr, HTTPS) ─────────────┐
+              │ Claude agent loop (plan · arrival · claim · ask)           │
+              │ policy.py: mandate, budget, ask-over limit  (money rules)  │
+              │ claims.py: benefit rules  ·  tap.py: signed payments       │
+              │ SSE /events → glasses + dashboard  ·  Vault  ·  ledger     │
+              └──┬───────────┬────────────┬────────────┬──────────────────┘
+                 ▼           ▼            ▼            ▼
+            FlightAware   Duffel     ElevenLabs +   Claude
+            (status)      (flights)  Twilio (call)  (verifies the call)
 ```
 
-**Principles**
+- The **engine** owns the flow, the money rules and every word on the glasses (`hud.screen` events).
+- The **glasses** only render lines and send gestures (`POST /input`) and voice (`POST /voice`, `POST /ask`).
+- **ASI:One** drives the same engine through the orchestrator agent.
+- The interface between all parts is in [`contract/`](contract/): [`events.md`](contract/events.md), [`api.md`](contract/api.md), [`mock-data.json`](contract/mock-data.json).
 
-- The glasses are only **display, microphone and tap**. No business logic runs there.
-- The **brain lives on Fetch.ai**: the Standby Agent plans and acts; the Monitor Agent watches flights.
-- The **backend is the bridge**: every component talks to it, and it broadcasts events to everyone.
-- **Sensitive rules live in code**, never in the LLM.
+## Run it locally
 
----
+Requirements: Python 3.11+, Node 20+.
 
-## Repository structure
-
-```
-handle-it/
-├── backend/          # FastAPI: events, Vault, guardrails, payments, simulators
-├── agents/           # uAgents: handle_it_agent.py, monitor_agent.py
-├── glasses/          # Even Hub app (TypeScript, based on the `asr` template)
-├── dashboard/        # Next.js: upload, activity feed, HUD mirror, demo controls
-├── voice/            # ElevenLabs agent configs and prompts (caller + airline)
-├── contracts/        # Shared types: events.py (Pydantic) and events.ts
-└── README.md
-```
-
----
-
-## Shared contract
-
-> **Rule:** nobody renames an event, field or endpoint without telling the whole team.
-
-### Event envelope
-
-Every event, in both directions, has this shape:
-
-```json
-{
-  "id": "evt_01",
-  "type": "approval.requested",
-  "task_id": "task_42",
-  "ts": "2026-10-17T21:05:00Z",
-  "data": { }
-}
-```
-
-- `type` — one of the events below.
-- `task_id` — groups all events of one trip action (booking or resolution). `null` for passive alerts.
-- `data` — the payload for that event type.
-
-### Events
-
-| Type | Emitted by | `data` |
-|---|---|---|
-| `trip.requested` | backend | `{origin, dest, deadline, max_price}` |
-| `task.started` | agent | `{kind: "book" \| "resolve"}` |
-| `option.found` | agent | `{options: [Option], chosen: "UA927", rejected: [{flight, reason}]}` |
-| `approval.requested` | agent | `{flight, departure, arrival, price, reason}` |
-| `approval.granted` | backend | `{}` |
-| `approval.rejected` | backend | `{}` |
-| `payment.executed` | agent | `{amount, currency: "USD", method: "visa_token", reference}` |
-| `flight.booked` | agent | `{flight, departure, arrival, gate, price}` |
-| `gate.changed` | monitor | `{flight, old_gate, new_gate}` |
-| `boarding.soon` | monitor | `{flight, gate, minutes}` |
-| `flight.cancelled` | monitor | `{flight, route}` |
-| `call.started` | agent | `{provider: "United"}` |
-| `call.completed` | agent | `{confirmation, summary}` |
-| `task.resolved` | agent | `{new_flight, departure, arrival, gate}` |
-| `task.failed` | agent | `{reason}` |
-| `vault.updated` | backend | `{item_type: "boarding_pass" \| "receipt" \| "call_transcript"}` |
-
-**Option**
-
-```json
-{ "flight": "UA927", "airline": "United", "origin": "LAX", "dest": "SFO",
-  "departure": "19:15", "arrival": "20:40", "price": 215, "refundable": true }
-```
-
-### HUD text per event
-
-The glasses app maps events to screens. Max 3 lines.
-
-| Event | HUD |
-|---|---|
-| `approval.requested` (book) | `UA183 · 6:10 PM` / `$189` / `Tap to buy` |
-| `flight.cancelled` | `UA183 CANCELLED` / `Want me to fix it?` / `Tap = yes` |
-| `approval.requested` (resolve) | `UA927 · 8:40 PM` / `$215` / `Tap to approve` |
-| `call.started` | `☎ Calling United` |
-| `gate.changed` | `Gate changed` / `52 → 61` |
-| `boarding.soon` | `Boarding in 20 min` / `Gate 61` |
-| `task.resolved` | `✓ Rebooked` / `UA927 · 8:40 PM` / `Gate 61` |
-
-Tap = approve / yes · Double tap = reject / no.
-
-### Backend endpoints
-
-| Method | Path | Body | Used by |
-|---|---|---|---|
-| `GET` | `/events` | — (SSE stream of envelopes) | glasses, dashboard |
-| `POST` | `/events` | envelope | agents |
-| `POST` | `/approval` | `{task_id, approved: bool}` | glasses, dashboard |
-| `POST` | `/accept-alert` | `{task_id?}` (user said "yes, fix it") | glasses |
-| `POST` | `/voice` | audio file (multipart) | glasses |
-| `POST` | `/trip/request` | `{origin, dest, deadline, max_price}` | dashboard, agent |
-| `POST` | `/vault/upload` | file (multipart) | dashboard |
-| `GET` | `/vault/booking` | `?user_id=` | agent |
-| `POST` | `/vault/items` | `{type, data, file_url?}` | agent |
-| `GET` | `/flights/search` | `?origin&dest&deadline&max_price` | agent |
-| `POST` | `/pay` | `{task_id, amount, merchant}` | agent (guardrail-checked) |
-| `POST` | `/simulate/gate` | `{}` | dashboard |
-| `POST` | `/simulate/boarding` | `{}` | dashboard |
-| `POST` | `/simulate/cancel` | `{}` | dashboard |
-| `POST` | `/demo/reset` | `{}` | dashboard |
-| `GET` | `/health` | — | everyone |
-
-### Standby Agent tools
-
-| Tool | Input | Output |
-|---|---|---|
-| `get_booking` | `{user_id}` | `{flight, origin, dest, date, departure, arrival, gate, pnr}` |
-| `search_flights` | `{origin, dest, deadline, max_price}` | `{options: [Option]}` |
-| `request_approval` | `{task_id, option, reason}` | `{approved: bool}` (blocks until tap) |
-| `pay` | `{task_id, amount, merchant}` | `{reference}` or error from guardrails |
-| `call_provider` | `{provider, goal, context}` | `{confirmation, new_flight, transcript}` |
-| `save_to_vault` | `{type, data}` | `{id}` |
-
-### Agent ↔ backend
-
-- **Backend → Standby Agent:** `POST {AGENT_URL}/task` (uAgents `@agent.on_rest_post`) with `{task_id, kind: "book" | "resolve", user_id, input}`.
-- **Agent → backend:** `POST {BACKEND_URL}/events` with an envelope, for every step.
-- **Monitor → Standby Agent:** native Fetch message (`ctx.send`) `FlightAlert{flight, status}`.
-
----
-
-## Demo event sequence
-
-**Act 1 — Book**
-```
-trip.requested → task.started{book} → option.found → approval.requested
-  → [tap] approval.granted → payment.executed → flight.booked → vault.updated
-```
-
-**Act 2 — Guide**
-```
-gate.changed → boarding.soon
-```
-
-**Act 3 — Resolve**
-```
-flight.cancelled → [tap] task.started{resolve} → option.found → approval.requested
-  → [tap] approval.granted → payment.executed → call.started → call.completed
-  → task.resolved → vault.updated
-```
-
-If the user rejects: `approval.rejected` → the agent emits `option.found` with the next option → new `approval.requested`.
-
----
-
-## Mock data
-
-**Booking (Act 1 result / Act 3 starting point)**
-
-```json
-{ "flight": "UA183", "airline": "United", "origin": "LAX", "dest": "SFO",
-  "date": "2026-10-18", "departure": "18:10", "arrival": "19:35",
-  "gate": "52", "pnr": "ABC123", "price": 189 }
-```
-
-**Alternatives after cancellation**
-
-| Flight | Departure | Arrival | Price | Result |
-|---|---|---|---|---|
-| DL412 | 19:00 | 20:20 | $340 | Rejected — over $250 budget |
-| AS1098 | 21:30 | 22:55 | $165 | Rejected — arrives after 10 PM |
-| **UA927** | **19:15** | **20:40** | **$215** | **Chosen** |
-
-**Monitor triggers**
-- `/simulate/gate`: gate 52 → 61
-- `/simulate/boarding`: 20 minutes
-- `/simulate/cancel`: UA183 → `CANCELLED`
-
-`/demo/reset` restores all of the above to the initial state.
-
----
-
-## Guardrails
-
-Enforced in `backend/guardrails.py`, never by the LLM:
-
-- **Max $250** per purchase.
-- **No payment without a matching `approval.granted`** for the same `task_id`.
-- **The LLM never sees card data.** Payments use a tokenized credential stored server-side.
-- Allowed actions only: book, rebook, call. No cabin upgrades.
-- The voice agent always **identifies itself as an AI assistant** acting on the user's behalf.
-
----
-
-## Getting started
-
-### Environment variables
+**1. Engine** (works with no keys at all: everything falls back to mock data)
 
 ```bash
-# backend/.env
-ANTHROPIC_API_KEY=
-SUPABASE_URL=
-SUPABASE_KEY=
-ELEVENLABS_API_KEY=
-ELEVENLABS_AGENT_ID=
-ELEVENLABS_PHONE_NUMBER_ID=
-AIRLINE_PHONE_NUMBER=
-VISA_API_KEY=            # if sandbox is available
-AGENT_URL=               # Standby Agent REST endpoint
-STT_API_KEY=             # speech-to-text provider
-
-# agents/.env
-ANTHROPIC_API_KEY=
-BACKEND_URL=
-AGENT_SEED=
-MONITOR_SEED=
-
-# glasses/.env and dashboard/.env
-BACKEND_URL=
-```
-
-### Backend
-
-```bash
-cd backend
+cd engine
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env              # optional: add keys, see Configuration
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Agents
+Open http://localhost:8000 for the dashboard, or drive the flow with curl:
 
 ```bash
-cd agents
-pip install uagents anthropic httpx
-python handle_it_agent.py
-python monitor_agent.py
+curl -X POST localhost:8000/input -H "Content-Type: application/json" -d '{"gesture":"press"}'
 ```
 
-### Dashboard
+`press` starts the flow and accepts the limit, `swipe_down` moves through the flights, `hold` books and approves the fee. Reset with `POST /demo/reset`.
+
+**2. Glasses app** (browser mirror and simulator)
 
 ```bash
-cd dashboard
+cd g2-app
 npm install
-npm run dev
+npm run dev      # http://localhost:5173 (keys: Space = tap, H = hold, ↓ = swipe)
+npm run sim      # optional: the Even Hub simulator
 ```
 
-### Glasses (local testing)
+**3. Agents** (ASI:One): see [`agents/README.md`](agents/README.md). They need `ENGINE_URL` and an Anthropic key.
 
-```bash
-cd glasses
-npm install
-npm run dev
-# Generate a QR with the laptop's LAN IP (not localhost) and scan it in the Even Realities app
-```
-
----
+The deployed engine runs on Vultr behind Caddy (HTTPS, systemd): [`engine/DEPLOY.md`](engine/DEPLOY.md).
 
 ## Install and run on G2
 
-> Required for the Even Realities track.
+**Even Hub app name:** `Standby` (Beta build).
 
-**Even Hub app name:** `Standby`
+1. Install the Even Realities app on your phone, sign in and pair your G2.
+2. Install the **Standby** Beta build from Even Hub and open it on the glasses.
+3. It connects to the hosted engine; no keys are needed to test. Tap to start the demo.
 
-1. Install the **Even Realities** app on your phone and sign in.
-2. Pair your G2 and update its firmware.
-3. In the Even Realities app go to **Me → Beta tester** and install **Standby**.
-4. Open Standby on the glasses. It connects to our hosted backend automatically; no API keys are needed to test.
-5. From the dashboard (`<DASHBOARD_URL>`), press **Simulate cancellation** and follow the HUD.
+**Gestures:** tap = start / yes / book (approvals ask "Are you sure?", tap again) · long press = ask a question by voice (on Ready) or approve directly · swipe down = next flight / no.
 
-**Controls:** tap = approve · double tap = reject / back.
+To sideload a dev build or point it at another engine (`?api=https://host` or `VITE_ENGINE_URL`), see [`g2-app/README.md`](g2-app/README.md).
 
-To build your own copy, set `BACKEND_URL` in `glasses/.env`, then build and package the `.ehpk` following the [Even Hub packaging guide](https://hub.evenrealities.com/docs/ship/packaging).
+## Configuration
 
----
+All keys are optional; without them the engine runs the full flow on mock data. Copy [`engine/.env.example`](engine/.env.example) to `engine/.env` (never commit it).
+
+| Variable | What it turns on |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude: call verification, free questions (`POST /ask`), and with `AGENT_MODE=claude` the agent loop |
+| `AGENT_MODE=claude` | Claude plans, proposes the limit, decides whether to call and drafts the claim (`off` = scripted flow) |
+| `AEROAPI_KEY`, `LIVE_FLIGHT=auto` | Live flight status (FlightAware) and the traveler's real flight before Start |
+| `FLIGHTS_MODE=duffel`, `DUFFEL_TOKEN` | Live flight search and test-mode orders (`mock` = demo fares) |
+| `CALL_MODE=elevenlabs`, `ELEVENLABS_*`, `CALL_TO_NUMBER` | A real outbound phone call (`mock` = simulated clerk) |
+| `OPENROUTER_API_KEY` | Voice commands on the glasses (speech to text and intent) |
+| `PUBLIC_URL`, `TAP_PRIVATE_KEY` | The signing key directory URL and a stable signing key |
+
+## Tests
+
+```bash
+cd engine && python test_engine.py      # 21 end-to-end cases, no network, no cost
+cd engine && python -m app.claims       # claim rules self-check
+cd agents && python test_agents.py      # the orchestrator against a running engine
+cd g2-app && npm run build              # type-check and build the glasses app
+```
+
+The engine suite stubs Claude, Duffel, FlightAware and ElevenLabs, and covers the SPEC's hostile cases: over-budget fees, wrong merchants, retracted door codes, calls that never connect, stale gestures, replayed signatures and over-claims. Results are served at `GET /tests` for the dashboard. A clerk asking for a card number is handled by the voice agent's prompt ([`voice/README.md`](voice/README.md)): it never gives, asks for or repeats card numbers.
+
+## Trust and safety
+
+- **Code decides money, never the model.** Every spend goes through `engine/app/policy.py` (budget, ask-over limit, merchant categories, expiry). Claude can propose a limit or a claim; code rounds, caps and checks it, and refuses anything else.
+- **Consent at the moment it matters.** One tap for the limit, one per flight and fee over $25. Voice can never approve a spend: it asks for a tap.
+- **Signed payments.** Each merchant request is signed (RFC 9421, Ed25519, `agent-payer-auth`), modeled on Visa's Trusted Agent Protocol; the public key is at `/.well-known/http-message-signatures-directory`. Tampering and replays are refused.
+- **Verified outcomes.** A door code reaches the glasses only if Claude marks the call verified and the code literally appears in the transcript.
+- **Disclosed calls.** The voice agent says it's an AI assistant, and never reads out card details.
+- **Fallbacks everywhere.** If Claude, Duffel, FlightAware or the call fails, the flow continues on the scripted path and says so.
+
+## Repository
+
+```
+engine/      FastAPI engine: flow, Claude agent, policy, claims, signed payments, SSE (P1)
+agents/      Fetch.ai uAgents: orchestrator and caller, ASI:One cards, Payment Protocol (P2)
+g2-app/      Even G2 app: Vite + React + Even Hub SDK, voice, browser mirror (P3)
+voice/       ElevenLabs voice agent setup and tools (P4)
+dashboard/   Judge dashboard served by the engine (P4)
+contract/    The shared interface: events, API, mock data
+docs/        SPEC.md (the product), TRAVEL-CLAIMS.md (claims research)
+```
+
+`backend/`, `contracts/` and `frontend/` are from an earlier plan and aren't used.
 
 ## Team
 
 | Role | Owner |
 |---|---|
-| Backend · Vault · guardrails · payments | Roberto Ochoa Cuevas |
-| Fetch.ai agents | _TBD_ |
-| G2 glasses app | _TBD_ |
-| Voice (ElevenLabs) · dashboard | _TBD_ |
+| Engine: flow, Claude agent, policy, payments, deploy | Roberto Ochoa Cuevas |
+| Fetch.ai agents and ASI:One | Heechan Yang |
+| G2 glasses app | Aldo Karim |
+| Voice agent (ElevenLabs) and dashboard | Feruz Karimov |
