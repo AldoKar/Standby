@@ -54,6 +54,10 @@ MAX_TOOL_HOPS = 6
 # call hangs up, not after the traveller asks for it.
 RESOLVE_TIMEOUT_S = 240
 OUTCOME_POLL_S = 1.0
+# The watcher that reports a call to the chat (a fee the business asks for, then the
+# outcome) outlives the turn that started it, so it can wait for a slow call and for the
+# traveller to answer a fee. It only gives up on a call that is plainly stuck.
+WATCH_TIMEOUT_S = 15 * 60
 
 # How long a chat's transcript stays valid between turns. ASI:One keys every conversation
 # with the same relay address, so without a cutoff a new chat opens holding the last one's
@@ -977,6 +981,87 @@ async def wait_for_outcome(ctx: Context, state: dict) -> dict | None:
     return None
 
 
+# ---------- watching a call ----------
+
+watching: dict[str, asyncio.Task] = {}  # task_id -> the watcher reporting that call to the chat
+
+
+def watch_call(ctx: Context, sender: str, task_id: str) -> None:
+    """Report this task's call to the chat as it moves: each fee the business asks for,
+    then the outcome. One watcher per task, running past the turn that started it — a real
+    call takes minutes to reach the fee, and the traveller must be asked when it does, not
+    when they next think to say "status?"."""
+    if task_id in watching:
+        return
+    watching[task_id] = asyncio.create_task(_watch(ctx, sender, task_id))
+
+
+async def _watch(ctx: Context, sender: str, task_id: str) -> None:
+    asked: set[str] = set()
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + WATCH_TIMEOUT_S
+    try:
+        while loop.time() < deadline:
+            await asyncio.sleep(OUTCOME_POLL_S)
+            try:
+                snap = await snapshot({"task_id": task_id})
+            except httpx.HTTPError:
+                continue
+            if snap.get("task_id") != task_id:
+                return  # reset, or a newer task took over: nothing left to report
+            if snap.get("stage") == "resolved":
+                await report_outcome(ctx, sender, snap)
+                return
+            a = pending_approval(snap)
+            if a and a["approval_id"] not in asked:
+                # The call hit a spend the traveller hasn't agreed to (the late check-in
+                # fee). Ask, exactly as the glasses do; their answer is a turn of its own,
+                # and this watcher carries on to the outcome.
+                asked.add(a["approval_id"])
+                await ask_fee(ctx, sender, snap, a)
+        await say(ctx, sender, "The call is taking longer than it should. Say 'status?' and I'll check on it.")
+    except Exception:
+        ctx.logger.exception("watching the call failed")
+    finally:
+        watching.pop(task_id, None)
+
+
+async def ask_fee(ctx: Context, sender: str, snap: dict, a: dict) -> None:
+    ask = fee_ask(snap, a)
+    state = load(ctx, sender)
+    state["task_id"] = snap.get("task_id")
+    state["approval_id"] = a["approval_id"]
+    state["history"].append({"role": "assistant", "content": ask})
+    save(ctx, sender, state)
+    await say(ctx, sender, ask, card=review_card(snap, a))
+
+
+async def report_outcome(ctx: Context, sender: str, snap: dict) -> None:
+    state = load(ctx, sender)
+    follow = list(state["history"]) + [
+        {
+            "role": "user",
+            "content": (
+                "The task finished while you waited. Report the outcome to the traveller in at "
+                f"most 4 short lines, using only these facts: {json.dumps({'stage': snap.get('stage'), 'outcome': snap.get('outcome'), 'ledger': snap.get('ledger')})}"
+            ),
+        }
+    ]
+    try:
+        # Every fact this turn needs is in the message above, so it gets no tools:
+        # the engine has already resolved the task, and a stray hire_caller here
+        # would pay the Caller to repeat a call that is finished.
+        final = await think(ctx, state, follow, tools=[])
+    except Exception:
+        ctx.logger.exception("outcome turn failed")
+        final = "The call is done. Say 'status?' for the details."
+    state["history"].append({"role": "assistant", "content": final})
+    state.pop("card", None)
+    state["approval_id"] = None
+    save(ctx, sender, state)
+    await say(ctx, sender, final, card=result_card(snap), end=True)
+
+
 _YES = re.compile(r"\b(approved?|yes|yep|yeah|ok|okay|sure|confirm(ed)?|go ahead|do it|book it)\b", re.I)
 _NO = re.compile(r"\b(no|nope|don'?t|do not|decline|reject|cancel|stop|not|wait)\b", re.I)
 
@@ -1176,49 +1261,15 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
 
     state["history"].append({"role": "assistant", "content": reply})
 
-    # A booking was just approved: the engine now books, declines the airline's offer and
-    # phones the guesthouse. Report that, then report the outcome when it lands.
+    # A booking was just approved (or a fee answered): the engine now books, declines the
+    # airline's offer and phones the guesthouse. Report that now; the watcher reports the
+    # fee ask and the outcome as each one lands, however long the call takes.
     if state.pop("awaiting_outcome", False):
-        save(ctx, sender, state)
-        await say(ctx, sender, reply)
-        state["said_yes"] = False  # nothing the traveller says from here on is in this turn
-        snap = await wait_for_outcome(ctx, state)
-        if snap is None:
-            await say(ctx, sender, "The call is still running. Say 'status?' in a moment.")
-            return
-        a = pending_approval(snap)
-        if a and snap.get("stage") != "resolved":
-            # The call hit a spend the traveller hasn't agreed to (the late check-in fee).
-            # Ask, exactly as the glasses do, and stop: their answer is the next turn.
-            ask = fee_ask(snap, a)
-            state["history"].append({"role": "assistant", "content": ask})
-            state.pop("said_yes", None)
-            save(ctx, sender, state)
-            await say(ctx, sender, ask, card=review_card(snap, a))
-            return
-        follow = list(state["history"]) + [
-            {
-                "role": "user",
-                "content": (
-                    "The task finished while you waited. Report the outcome to the traveller in at "
-                    f"most 4 short lines, using only these facts: {json.dumps({'stage': snap.get('stage'), 'outcome': snap.get('outcome'), 'ledger': snap.get('ledger')})}"
-                ),
-            }
-        ]
-        try:
-            # Every fact this turn needs is in the message above, so it gets no tools:
-            # the engine has already resolved the task, and a stray hire_caller here
-            # would pay the Caller to repeat a call that is finished.
-            final = await think(ctx, state, follow, tools=[])
-        except Exception:
-            ctx.logger.exception("outcome turn failed")
-            final = "The room is held. Say 'status?' for the details."
-        state["history"].append({"role": "assistant", "content": final})
-        state.pop("card", None)
         state.pop("said_yes", None)
         save(ctx, sender, state)
-        resolved = snap.get("stage") == "resolved"
-        await say(ctx, sender, final, card=result_card(snap) if resolved else None, end=resolved)
+        await say(ctx, sender, reply)
+        if state.get("task_id"):
+            watch_call(ctx, sender, state["task_id"])
         return
 
     state.pop("said_yes", None)
@@ -1226,6 +1277,15 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     card = await build_card(ctx, state)
     if reply or card is not None:
         await say(ctx, sender, reply, card=card)
+    if state.get("task_id") and state["task_id"] not in watching:
+        # A call can be live with nobody watching it: the agent restarted mid-call, or the
+        # call began from another relay address. Pick it up so its fee and result still land.
+        try:
+            live = (await snapshot(state)).get("stage") in ("booked", "calling", "fee")
+        except httpx.HTTPError:
+            live = False
+        if live:
+            watch_call(ctx, sender, state["task_id"])
 
 
 @chat_proto.on_message(ChatAcknowledgement)
