@@ -22,6 +22,7 @@ import { initialInsights, insightsReducer, LEDGER_EVENTS, RING_NUDGE_MS } from '
 import type { Ledger } from './engine/types'
 import { startVoice } from './voice/listener'
 import { VoiceTester } from './voice/VoiceTester'
+import { LinkGlasses } from './link/LinkGlasses'
 
 const BUILD = `build ${__BUILD_ID__}`
 const HELP = 'The trip chat lives in ASI:One. Here you can type "simulate" to start the demo or "reset".'
@@ -235,6 +236,7 @@ function App() {
   return (
     <main className="app">
       <header className="hero">
+        <LinkGlasses />
         <h1>Standby.</h1>
         <p className="hero-sub">
           Airlines fix the flight. Nobody fixes the rest of your night. Standby rebooks you tonight and phones the

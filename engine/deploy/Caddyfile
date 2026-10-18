@@ -6,3 +6,11 @@ DOMAIN {
 		flush_interval -1
 	}
 }
+
+# The glasses app's web page (g2-app/dist): the "Link glasses" QR on it points here, so the Even app can open
+# Standby from anywhere. glasses.DOMAIN resolves like DOMAIN (sslip.io takes any prefix). See DEPLOY.md, step 8.
+glasses.DOMAIN {
+	root * /opt/handle-it/g2-app/dist
+	try_files {path} /index.html
+	file_server
+}
