@@ -9,7 +9,8 @@ export type HudAction =
   | { kind: 'dismiss' }
 
 export type HudIcon = 'none' | 'search' | 'plane' | 'check' | 'alert' | 'phone' | 'clock'
-export type HudBar = { kind: 'progress'; value: number } | { kind: 'wave' }
+// No progress bar: we never know real progress, and a fixed % would lie.
+export type HudBar = { kind: 'wave' }
 
 export type HudScreen = {
   header: string
@@ -19,6 +20,8 @@ export type HudScreen = {
   icon?: HudIcon
   alert?: boolean // bordered card around the main zone
   bar?: HudBar
+  busy?: boolean // open-ended wait: the icon slot shows a dot spinner (falls back to `icon` on a slow link)
+  choices?: { tap: string; hold?: string } // button labels; each shows its gesture below. Replaces `footer`.
   onTap?: HudAction // tap = approve / yes
   onReject?: HudAction // long press = reject / no (double tap is reserved for exit)
 }
@@ -32,15 +35,16 @@ export function formatTime(hhmm: string): string {
 }
 
 export function idleScreen(build: string): HudScreen {
-  return { header: 'HANDLE IT', icon: 'plane', lines: ['Ready', 'Ask me from your phone'], footer: build }
+  return { header: 'STANDBY', icon: 'plane', lines: ['Ready', 'Ask me from your phone'], footer: build }
 }
 
 /** Plain-text summary for logs and screen readers. */
 export function screenSummary(s: HudScreen): string {
-  return [s.header, ...s.lines, s.detail, s.footer].filter(Boolean).join(', ')
+  const choices = s.choices
+    ? [`${s.choices.tap} (tap)`, s.choices.hold ? `${s.choices.hold} (hold)` : undefined]
+    : [s.footer]
+  return [s.header, ...s.lines, s.detail, ...choices].filter(Boolean).join(', ')
 }
-
-const TAP_LONG_GAP = '     '
 
 /**
  * Stateful mapper: some screens depend on earlier events (task kind, trip, rejected options, confirmation).
@@ -65,20 +69,20 @@ export function createScreenMapper() {
         if (e.task_id) taskKinds.set(e.task_id, e.data.kind)
         return e.data.kind === 'book'
           ? {
-              header: 'HANDLE IT · BOOKING',
+              header: 'STANDBY · BOOKING',
               icon: 'search',
               lines: [
                 'Searching flights…',
                 trip ? `${trip.origin} → ${trip.dest} · before ${formatTime(trip.deadline)}` : 'Comparing options',
               ],
-              bar: { kind: 'progress', value: 0.35 },
+              busy: true,
               footer: 'Hang tight, a few seconds',
             }
           : {
               header: 'REBOOKING · SEARCHING',
               icon: 'search',
               lines: ['Finding alternatives…', 'Checking other flights'],
-              bar: { kind: 'progress', value: 0.35 },
+              busy: true,
               footer: 'Hang tight, a few seconds',
             }
 
@@ -100,7 +104,7 @@ export function createScreenMapper() {
             // Arrival matters when rebooking: the question is "do I still make it before the deadline?"
             lines: [`${flight} · lands ${formatTime(arrival)}`, `$${price}${inBudget ? ' · within budget' : ''}`],
             detail: ruledOut > 0 ? `${ruledOut} others ruled out` : reason,
-            footer: `Tap = approve${TAP_LONG_GAP}Hold = next`,
+            choices: { tap: 'Approve', hold: 'Next' },
             ...actions,
           }
         }
@@ -109,7 +113,7 @@ export function createScreenMapper() {
           icon: 'plane',
           lines: [`${flight} · ${formatTime(departure)}`, `$${price}${trip ? ` · ${trip.origin} → ${trip.dest}` : ''}`],
           detail: reason,
-          footer: `Tap = buy${TAP_LONG_GAP}Hold = skip`,
+          choices: { tap: 'Buy', hold: 'Skip' },
           ...actions,
         }
       }
@@ -156,7 +160,7 @@ export function createScreenMapper() {
           alert: true,
           icon: 'alert',
           lines: [`${e.data.flight} CANCELLED`, 'Want me to fix it?'],
-          footer: `Tap = yes${TAP_LONG_GAP}Hold = no`,
+          choices: { tap: 'Fix it', hold: 'No' },
           onTap: { kind: 'accept_alert', task_id: e.task_id },
           onReject: { kind: 'dismiss' },
         }

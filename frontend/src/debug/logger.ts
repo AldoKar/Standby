@@ -10,7 +10,7 @@ export function log(msg: string) {
   const entry = { id: nextId++, ts: new Date().toLocaleTimeString(), msg }
   entries.push(entry)
   if (entries.length > 200) entries.shift()
-  console.log(`[handle-it] ${msg}`)
+  console.log(`[standby] ${msg}`)
   const snapshot = [...entries]
   listeners.forEach((fn) => fn(snapshot))
 }

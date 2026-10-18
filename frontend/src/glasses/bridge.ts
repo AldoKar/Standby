@@ -39,6 +39,30 @@ let desired: PagePlan | null = null
 let applied: { signature: string; texts: Map<number, string>; images: Map<number, string> } | null = null
 let renderTimer: ReturnType<typeof setTimeout> | null = null
 let rendering = false
+let browserMode = false
+
+// Measured time of one updateImageRawData round trip (exponential moving average).
+let imageAvgMs: number | null = null
+let imageSamples = 0
+
+function recordImageLatency(ms: number) {
+  imageAvgMs = imageAvgMs === null ? ms : imageAvgMs * 0.7 + ms * 0.3
+  imageSamples++
+  if (imageSamples <= 3 || imageSamples % 20 === 0) {
+    log(`image update ${Math.round(ms)}ms (avg ${Math.round(imageAvgMs)}ms, n=${imageSamples})`)
+  }
+}
+
+/** Average image update time; 0 in browser mode (no BLE), null until measured on a device. */
+export function imageLatencyMs(): number | null {
+  return browserMode ? 0 : imageAvgMs
+}
+
+/** True when nothing is queued or in flight, so an optional animation frame won't delay a real screen. */
+export function isRenderIdle(): boolean {
+  if (!pageReady) return true
+  return !rendering && !renderTimer && desired === null
+}
 
 const inputListeners = new Set<(input: GlassesInput) => void>()
 
@@ -94,10 +118,10 @@ function pageModel(plan: PagePlan) {
           yPosition: t.y,
           width: t.w,
           height: t.h,
-          paddingLength: PADDING,
+          paddingLength: t.padding ?? PADDING,
           borderWidth: t.border ? 2 : 0,
           borderColor: t.border ? BORDER_COLOR : 0,
-          borderRadius: t.border ? 10 : 0,
+          borderRadius: t.border ? (t.radius ?? 10) : 0,
           containerID: t.id,
           containerName: t.name,
           content: t.content,
@@ -165,6 +189,7 @@ async function apply(plan: PagePlan): Promise<void> {
 
   for (const i of plan.images) {
     if (state.images.get(i.id) === i.key) continue
+    const started = performance.now()
     const result = await withTimeout(
       b.updateImageRawData(
         new ImageRawDataUpdate({ containerID: i.id, containerName: i.name, imageData: imageGray(i.key, i.w, i.h) }),
@@ -172,6 +197,7 @@ async function apply(plan: PagePlan): Promise<void> {
       CALL_TIMEOUT_MS,
       'updateImageRawData',
     )
+    recordImageLatency(performance.now() - started)
     if (result === ImageRawDataUpdateResult.success) state.images.set(i.id, i.key)
     else log(`updateImageRawData(${i.name}, ${i.key}) → ${result}`)
   }
@@ -215,12 +241,14 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
       bridge = await withTimeout(waitForEvenAppBridge(), BRIDGE_TIMEOUT_MS, 'waitForEvenAppBridge')
     } catch (err) {
       log(`no Even bridge → browser mode (${(err as Error).message})`)
+      browserMode = true
       return 'browser'
     }
     // The SDK also resolves in a normal browser, but there is no native host behind it.
     if (!('flutter_inappwebview' in window)) {
       log('no flutter_inappwebview host → browser mode (mirror only)')
       bridge = null
+      browserMode = true
       return 'browser'
     }
     log('bridge ready')

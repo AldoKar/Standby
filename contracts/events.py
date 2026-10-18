@@ -1,4 +1,4 @@
-"""Handle It shared contract. Source of truth: readme.md "Shared contract".
+"""Standby shared contract. Source of truth: readme.md "Shared contract".
 Mirror of events.ts — change both together and tell the team.
 """
 from datetime import datetime, timezone

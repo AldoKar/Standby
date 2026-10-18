@@ -8,6 +8,7 @@ type Props = {
   onSend: (text: string) => void
 }
 
+/** Agent = plain text, user = light bubble, system events = small timeline rows. */
 export function ChatPanel({ messages, onSend }: Props) {
   const [draft, setDraft] = useState('')
   const listRef = useRef<HTMLOListElement>(null)
@@ -25,10 +26,10 @@ export function ChatPanel({ messages, onSend }: Props) {
   }
 
   return (
-    <section className="panel chat-panel" aria-labelledby="chat-title">
-      <header className="panel-header">
-        <h2 id="chat-title">Chat</h2>
-      </header>
+    <section className="chat" aria-labelledby="chat-title">
+      <h2 id="chat-title" className="section-label">
+        Chat
+      </h2>
 
       <ol className="messages" ref={listRef} aria-live="polite">
         {messages.map((m) => (
@@ -49,7 +50,9 @@ export function ChatPanel({ messages, onSend }: Props) {
           placeholder="Get me to SF tomorrow before 10 PM, max $250"
           autoComplete="off"
         />
-        <button type="submit">Send</button>
+        <button type="submit" className="btn btn-primary">
+          Send
+        </button>
       </form>
     </section>
   )

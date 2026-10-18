@@ -1,4 +1,4 @@
-// Handle It shared contract. Source of truth: readme.md "Shared contract".
+// Standby shared contract. Source of truth: readme.md "Shared contract".
 // Mirror of events.py — change both together and tell the team.
 
 // ---------- Shared shapes ----------

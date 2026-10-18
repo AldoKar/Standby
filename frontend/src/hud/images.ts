@@ -1,13 +1,28 @@
 // Icons and bars drawn on a canvas, then exported two ways:
 // - grayscale bytes (1 byte/px, row-major) for updateImageRawData on the glasses
 // - a green-tinted data URL for the browser mirror (same pixels, so mirror == lens)
-// Keys: "icon:<name>", "bar:progress:<0-100>", "bar:wave". Black = off = transparent on the lens.
+// Keys: "icon:<name>[:<frame>]", "bar:wave[:<frame>]". Black = off = transparent on the lens.
+// Animation frames are just more keys (see hud/animations.ts); every key is drawn once and cached.
 const BRIGHT = 255
-const DIM = 110
+const MID = 150
+const DIM = 60
 
 const gray = (v: number) => `rgb(${v},${v},${v})`
 
-function drawIcon(ctx: CanvasRenderingContext2D, name: string) {
+// Dot spinner: 8 dots on a ring, one bright head + one mid trail stepping clockwise.
+// Discrete steps read fine at ~3 fps, unlike a rotating arc.
+const SPINNER_DOTS = 8
+// Voice bars per frame; frame 0 is also the static wave.
+const WAVE_FRAMES = [
+  [8, 16, 24, 14, 22, 10, 18, 8, 14, 20, 10, 6],
+  [14, 22, 12, 20, 10, 18, 8, 16, 22, 10, 16, 10],
+  [20, 10, 18, 8, 16, 24, 12, 20, 8, 14, 22, 14],
+  [10, 18, 22, 16, 8, 14, 22, 12, 18, 24, 8, 18],
+]
+export const WAVE_FRAME_COUNT = WAVE_FRAMES.length
+export const SPINNER_FRAME_COUNT = SPINNER_DOTS
+
+function drawIcon(ctx: CanvasRenderingContext2D, name: string, frame: number | null) {
   ctx.strokeStyle = gray(BRIGHT)
   ctx.fillStyle = gray(BRIGHT)
   ctx.lineWidth = 5
@@ -21,10 +36,24 @@ function drawIcon(ctx: CanvasRenderingContext2D, name: string) {
       ctx.lineTo(42, 42)
       ctx.stroke()
       break
+    case 'spinner': {
+      const head = (frame ?? 0) % SPINNER_DOTS
+      for (let d = 0; d < SPINNER_DOTS; d++) {
+        const a = (d / SPINNER_DOTS) * Math.PI * 2 - Math.PI / 2 // start at 12 o'clock
+        const v = d === head ? BRIGHT : d === (head + SPINNER_DOTS - 1) % SPINNER_DOTS ? MID : DIM
+        ctx.fillStyle = gray(v)
+        ctx.beginPath()
+        ctx.arc(24 + Math.cos(a) * 17, 24 + Math.sin(a) * 17, d === head ? 4.5 : 3.5, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      break
+    }
     case 'check':
+      // Draw-in: frame 0 = short stroke, frame 1 = half of the long stroke, no frame = complete.
       ctx.moveTo(5, 25)
       ctx.lineTo(18, 38)
-      ctx.lineTo(43, 9)
+      if (frame === 1) ctx.lineTo(30, 24)
+      else if (frame === null) ctx.lineTo(43, 9)
       ctx.stroke()
       break
     case 'alert':
@@ -79,17 +108,9 @@ function drawIcon(ctx: CanvasRenderingContext2D, name: string) {
   }
 }
 
-function drawBar(ctx: CanvasRenderingContext2D, kind: string, arg: string | undefined, w: number, h: number) {
-  if (kind === 'progress') {
-    const pct = Number(arg ?? 0) / 100
-    ctx.strokeStyle = gray(DIM)
-    ctx.lineWidth = 2
-    ctx.strokeRect(1, h / 2 - 7, w - 2, 14)
-    ctx.fillStyle = gray(BRIGHT)
-    ctx.fillRect(3, h / 2 - 5, Math.max(0, (w - 6) * pct), 10)
-  } else if (kind === 'wave') {
-    // Static "voice" bars: no animation over BLE.
-    const heights = [8, 16, 24, 14, 22, 10, 18, 8, 14, 20, 10, 6]
+function drawBar(ctx: CanvasRenderingContext2D, kind: string, arg: string | undefined, h: number) {
+  if (kind === 'wave') {
+    const heights = WAVE_FRAMES[Number(arg ?? 0) % WAVE_FRAMES.length]
     ctx.fillStyle = gray(BRIGHT)
     heights.forEach((bh, i) => ctx.fillRect(2 + i * 14, (h - bh) / 2, 8, bh))
   }
@@ -104,8 +125,8 @@ function render(key: string, w: number, h: number): HTMLCanvasElement {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, w, h)
   const [type, name, arg] = key.split(':')
-  if (type === 'icon') drawIcon(ctx, name)
-  else if (type === 'bar') drawBar(ctx, name, arg, w, h)
+  if (type === 'icon') drawIcon(ctx, name, arg === undefined ? null : Number(arg))
+  else if (type === 'bar') drawBar(ctx, name, arg, h)
   return canvas
 }
 
