@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import anthropic
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import call, flights, policy, tap, verify, voice
+from . import agent, call, flights, policy, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,12 +56,15 @@ class State:
         self.mandate = policy.Mandate.from_dict(MOCK["mandate"])
         self.ledger = policy.Ledger()
         self.options: list[dict] = []
+        self.flights_source, self.flights_error = "mock", None
         self.pick: dict | None = None
         self.approvals: dict[str, dict] = {}
         self.fee_allowance = 0.0
         self.outcome: dict | None = None
         self.screen: dict = ready_screen()
         self.vault: list[dict] = seed_vault()
+        self.agent_log: list[dict] = []  # what Claude did this task: thoughts, tool calls, results
+        self.call_started = False
 
 
 def seed_vault() -> list[dict]:
@@ -136,6 +140,7 @@ def snapshot() -> dict:
         "outcome": S.outcome,
         "ledger": S.ledger.view(S.mandate),
         "vault": S.vault,
+        "agent": S.agent_log,
         "call_mode": CALL_MODE,
     }
 
@@ -149,10 +154,11 @@ async def start_flow(source: str) -> None:
     await publish("flight.cancelled", {"flight": b["flight"], "route": f"{b['from']}-{b['to']}",
                                        "airline_offer": offer, "source": source})
     await show("searching", [f"{b['flight']} cancelled", "Finding flights..."])
-    options, source, error = await find_options(b)
-    S.options = policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"])
-    S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
-    await publish("options.ranked", {"options": S.options, "source": source, "error": error})
+    if not (agent.enabled() and await plan_with_agent(b)):
+        await search(b["from"], b["to"])
+        S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
+    await publish("options.ranked", {"options": S.options, "source": S.flights_source, "error": S.flights_error,
+                                      "chosen_by": "agent" if S.pick and S.pick.get("chosen_by") == "agent" else "policy"})
     await show("cancelled", [f"{b['flight']} cancelled", f"{offer['airline']}: {hhmm(offer['departs'])} tmrw", "Tap = fix it"],
                {"press": "fix"})
     S.stage = "cancelled"
@@ -162,18 +168,88 @@ async def start_flow(source: str) -> None:
 LA = timezone(timedelta(hours=-7))
 
 
-async def find_options(b: dict) -> tuple[list[dict], str, str | None]:
-    """The airline's free rebooking plus live Duffel fares for tonight; mock fares if Duffel is off or fails."""
+async def find_options(origin: str, dest: str, date: str | None = None) -> tuple[list[dict], str, str | None]:
+    """The airline's free rebooking plus live Duffel fares; mock fares if Duffel is off or fails."""
     if not flights.enabled():
         return MOCK["options"], "mock", None
     now_la = datetime.now(LA)
+    today = now_la.date().isoformat()
     try:
-        live = await flights.search(b["from"], b["to"], now_la.date().isoformat())
+        live = await flights.search(origin, dest, date or today, today)
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError, IndexError) as e:
         return MOCK["options"], "mock", f"duffel: {e}"[:300]
-    if not flights.test_mode():  # test-mode schedules are made up, so only drop gone flights for live fares
+    if not flights.test_mode() and (date or today) == today:  # test-mode schedules are made up
         live = [o for o in live if o["departs"] > now_la.strftime("%H:%M")]
     return [MOCK["options"][0], *live], "duffel", None
+
+
+async def search(origin: str, dest: str, date: str | None = None) -> list[dict]:
+    """Search and rank; the ranked options become the task's options."""
+    options, S.flights_source, S.flights_error = await find_options(origin, dest, date)
+    S.options = policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"])
+    return S.options
+
+
+# ---------- Claude as the agent (AGENT_MODE=claude) ----------
+
+async def agent_step(step: dict) -> None:
+    S.agent_log.append({**step, "ts": now()})
+    await publish("agent.step", step)
+
+
+async def run_agent(phase: str, facts: dict, tools: dict) -> bool:
+    """True if Claude finished the phase; False (and logged) if it failed, so the scripted flow takes over."""
+    try:
+        said = await agent.run(phase, facts, tools, agent_step)
+    except (anthropic.APIError, RuntimeError, TimeoutError, ValueError, KeyError) as e:
+        await publish("agent.failed", {"phase": phase, "error": str(e)[:300]})
+        return False
+    await publish("agent.done", {"phase": phase, "text": said})
+    S.agent_log.append({"phase": phase, "kind": "done", "text": said, "ts": now()})
+    return True
+
+
+def brief(o: dict) -> dict:
+    return {k: o.get(k) for k in ("id", "airline", "flight", "departs", "arrives", "day", "stops", "price_usd",
+                                  "verdict", "reason")}
+
+
+async def plan_with_agent(b: dict) -> bool:
+    """Claude checks the flight, searches and chooses. False if it failed (the scripted plan runs instead)."""
+    async def check_flight_status(i: dict) -> dict:
+        if i["flight"].replace(" ", "").upper() != b["flight"]:
+            return {"flight": i["flight"], "status": "unknown"}
+        return {"flight": b["flight"], "route": f"{b['from']}-{b['to']}", "date": b["date"], "status": "cancelled",
+                "airline_rebooking": MOCK["airline_offer"], "source": "mock"}
+
+    async def search_flights(i: dict) -> dict:
+        found = await search(i["origin"].upper(), i["destination"].upper(), i.get("date"))
+        return {"source": S.flights_source, "options": [brief(o) for o in found]}
+
+    async def read_vault(_: dict) -> dict:
+        return {"items": [{"type": v["type"], "title": v["title"], "data": v["data"]} for v in S.vault]}
+
+    async def choose_flight(i: dict) -> dict:
+        o = next((o for o in S.options if o["id"] == i["option_id"]), None)
+        if not o:
+            return {"error": f"no option {i['option_id']}; search first"}
+        if o["verdict"] == "rejected":
+            return {"refused": f"policy rejected it: {o['reason']}"}
+        for x in S.options:
+            x["verdict"] = "ok" if x["verdict"] == "pick" else x["verdict"]
+        o.update(verdict="pick", chosen_by="agent", agent_reason=i["reason"])
+        S.pick = o
+        return {"chosen": f"{o['airline']} {o['flight']}", "next": "the traveler approves the booking on the glasses"}
+
+    S.pick = None
+    facts = {"traveler": MOCK["traveler"]["name"], "now": datetime.now(LA).isoformat(timespec="minutes"),
+             "cancelled_booking": b, "mandate": S.mandate.instruction, "budget_left_usd": S.ledger.remaining(S.mandate),
+             "deadline": MOCK["deadline"]}
+    ok = await run_agent("plan", facts, {"check_flight_status": check_flight_status, "search_flights": search_flights,
+                                         "read_vault": read_vault, "choose_flight": choose_flight})
+    if ok and not S.options:  # finished without searching: rank anyway so the glasses have options
+        await search(b["from"], b["to"])
+    return ok
 
 
 async def offer_pick() -> dict | None:
@@ -296,6 +372,41 @@ async def after_booking() -> None:
         "pnr": order.get("pnr"), "order_id": order.get("order_id"), "booked_via": order["source"]})
     await show("booked", [f"Booked · PNR {order['pnr']}", "Pass saved"] if order.get("pnr") else ["Booked · pass saved"])
     await asyncio.sleep(1.5)
+    if agent.enabled() and await arrival_with_agent():
+        if not S.call_started:  # Claude decided no call is needed
+            S.stage = "resolved"
+            await publish("task.resolved", {"flight": p["flight"], "lodging": None})
+            await show("resolved", ["All set", "No call needed"], {"press": "dismiss"}, 10)
+        return
+    if not S.call_started:
+        await call_lodging()
+
+
+async def arrival_with_agent() -> bool:
+    """Claude checks the arrival against the lodging and decides whether to call. False if it failed."""
+    p, lodging = S.pick, MOCK["lodging"]
+
+    async def check_arrival(_: dict) -> dict:
+        eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
+        return {"flight": f"{p['airline']} {p['flight']}", "lands": p["arrives"], "lands_day": p["day"],
+                "lodging": lodging["name"], "confirmation": lodging["confirmation"], "note": lodging["note"],
+                "travel_minutes": lodging["travel_minutes_from_airport"], "eta_at_lodging": eta,
+                "desk_closes": lodging["desk_closes"], "arrives_after_desk_closes": eta > lodging["desk_closes"]}
+
+    async def call_lodging_tool(i: dict) -> dict:
+        if S.call_started:
+            return {"error": "already called"}
+        S.call_started = True
+        run_later(call_lodging(i.get("reason")))
+        return {"status": "calling", "next": "the outcome reaches the traveler when the call ends"}
+
+    facts = {"traveler": MOCK["traveler"]["name"], "booked_flight": brief(p), "lodging": lodging["name"]}
+    return await run_agent("arrival", facts, {"check_arrival": check_arrival, "call_lodging": call_lodging_tool})
+
+
+async def call_lodging(reason: str | None = None) -> None:
+    p, lodging = S.pick, MOCK["lodging"]
+    S.call_started = True
     eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
     await publish("cutoff.detected", {"place": lodging["name"], "closes_at": lodging["desk_closes"],
                                       "arrival": p["arrives"], "eta": eta})
@@ -304,7 +415,8 @@ async def after_booking() -> None:
     S.stage = "calling"
     variables = {"guest_name": MOCK["traveler"]["name"], "confirmation": lodging["confirmation"],
                  "eta": hhmm(eta), "task_id": S.task_id}
-    await publish("call.started", {"to": lodging["name"], "purpose": "hold the room for a late arrival", "mode": CALL_MODE})
+    await publish("call.started", {"to": lodging["name"], "purpose": reason or "hold the room for a late arrival",
+                                   "mode": CALL_MODE})
     if CALL_MODE == "elevenlabs":
         try:
             await start_call(variables)
@@ -672,7 +784,7 @@ def set_mandate(fields: dict):
 
 @app.get("/flights/search")
 async def flights_search():
-    options, source, error = await find_options(MOCK["booking"])
+    options, source, error = await find_options(MOCK["booking"]["from"], MOCK["booking"]["to"])
     return {"options": policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"]),
             "source": source, "error": error}
 

@@ -5,7 +5,7 @@ Base URL: the engine (locally `http://localhost:8000`). All bodies are JSON, and
 | Method and path | Called by | Body → response |
 |---|---|---|
 | `GET /events` | Glasses, dashboard | SSE stream (see `events.md`) |
-| `GET /state` | Anyone (debugging) | Full state snapshot |
+| `GET /state` | Anyone (debugging) | Full state snapshot; `agent` is the list of what Claude did this task (same items as `agent.step`/`agent.done`) |
 | `POST /input` | Glasses | `{"gesture", "screen_id"?}`, gesture is `press`, `hold` or `swipe_down` → `{"handled", "stage", "reason"?}`. If `screen_id` is sent and isn't the screen currently shown, the gesture is ignored (`handled: false`, `reason: "stale screen: ..."`), so a late gesture can't approve a different spend. Without `screen_id` (dashboard buttons) every gesture is accepted as before |
 | `POST /voice` | Glasses | `{"screen_id", "audio"?, "format"?, "transcript"?}`: `audio` is base64 WAV (16 kHz mono), or send `transcript` to skip speech-to-text (typed commands, tests) → `{"transcript", "intent", "confidence", "via", "gesture", "handled", "confirm_required", "reason", "stage"}`. The engine transcribes (OpenRouter), picks one intent the screen allows (table below) and runs it like the matching gesture, with the same stale-screen check. An `approve` on a spend screen is never applied: it returns `confirm_required: true` and the glasses ask for a tap. English only for now |
 | `POST /demo/reset` | Dashboard | Back to the Ready screen |

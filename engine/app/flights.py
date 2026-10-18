@@ -38,7 +38,7 @@ async def _post(path: str, data: dict) -> dict:
     return r.json()["data"]
 
 
-def to_option(offer: dict, date: str) -> dict:
+def to_option(offer: dict, today: str) -> dict:
     """A Duffel offer in the engine's option shape (see contract/mock-data.json)."""
     segs = offer["slices"][0]["segments"]
     first, last = segs[0], segs[-1]
@@ -48,7 +48,7 @@ def to_option(offer: dict, date: str) -> dict:
         "airline": offer["owner"]["name"],
         "flight": f"{carrier['iata_code']}{first['marketing_carrier_flight_number']}",
         "departs": first["departing_at"][11:16], "arrives": last["arriving_at"][11:16],
-        "day": "today" if last["arriving_at"][:10] == date else "tomorrow",
+        "day": "today" if last["arriving_at"][:10] == today else "later",
         "stops": len(segs) - 1,
         "price_usd": round(float(offer["total_amount"])), "currency": offer["total_currency"],
         "total_amount": offer["total_amount"], "passenger_id": offer["passengers"][0]["id"],
@@ -56,16 +56,16 @@ def to_option(offer: dict, date: str) -> dict:
     }
 
 
-async def search(origin: str, dest: str, date: str) -> list[dict]:
-    """Cheapest few one-way economy offers for one adult, as engine options."""
+async def search(origin: str, dest: str, date: str, today: str | None = None) -> list[dict]:
+    """Cheapest few one-way economy offers for one adult, as engine options ("day" is relative to today)."""
     req = await _post("/air/offer_requests?return_offers=true&supplier_timeout=15000", {
         "slices": [{"origin": origin, "destination": dest, "departure_date": date}],
         "passengers": [{"type": "adult"}], "cabin_class": "economy", "max_connections": 0})
     offers = sorted(req["offers"], key=lambda o: float(o["total_amount"]))
     seen, out = set(), []
     for o in offers:
-        opt = to_option(o, date)
-        if opt["flight"] not in seen:  # one fare per flight
+        opt = to_option(o, today or date)
+        if opt["flight"] not in seen and not opt["flight"].startswith("ZZ"):  # one fare per flight; ZZ = Duffel's fake airline
             seen.add(opt["flight"])
             out.append(opt)
     return out[:MAX_OPTIONS]

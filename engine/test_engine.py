@@ -9,6 +9,7 @@ os.environ.setdefault("MOCK_CALL_END_S", "0.2")
 # (app/__init__ loads .env, but variables already set here win).
 os.environ["CALL_MODE"] = "mock"
 os.environ["FLIGHTS_MODE"] = "mock"  # nor real flight orders
+os.environ["AGENT_MODE"] = "off"  # nor Claude calls (test_agent stubs it)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -410,6 +411,53 @@ def test_live_flights(c):
         c.post("/demo/reset")
 
 
+def test_agent_decides(c):
+    """AGENT_MODE=claude: Claude's tool calls drive the plan and the arrival call, but policy has the
+    last word (a rejected option is refused). No network: agent.run is replaced by a scripted Claude."""
+    from app import agent
+
+    async def fake_claude(phase, facts, tools, on_step):
+        async def use(name, **i):
+            out = await tools[name](i)
+            await on_step({"phase": phase, "kind": "tool", "tool": name, "input": i, "result": out, "error": False})
+            return out
+        if phase == "plan":
+            assert (await use("check_flight_status", flight="UA183"))["status"] == "cancelled"
+            found = await use("search_flights", origin="LAX", destination="SFO", date="2026-10-18")
+            ids = {o["airline"]: o["id"] for o in found["options"]}
+            assert "refused" in await use("choose_flight", option_id=ids["American"], reason="nonstop")  # over budget
+            assert "chosen" in await use("choose_flight", option_id=ids["Delta"], reason="arrives tonight in budget")
+            return "Picked Delta DL1946: lands 10:40 PM, $215."
+        assert (await use("check_arrival"))["arrives_after_desk_closes"] is True
+        await use("call_lodging", reason="desk closes before the traveler arrives")
+        assert "error" in await use("call_lodging", reason="again")  # one call only
+        return "Calling the guesthouse to hold the room."
+
+    real = (agent.enabled, agent.run)
+    agent.enabled, agent.run = (lambda: True), fake_claude
+    try:
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        s = c.get("/state").json()
+        assert s["pick"]["flight"] == "DL1946" and s["pick"]["chosen_by"] == "agent"
+        assert [x["tool"] for x in s["agent"] if x["kind"] == "tool"][:4] == [
+            "check_flight_status", "search_flights", "choose_flight", "choose_flight"]
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "hold"})
+        s = wait_for(c, "fee")  # Claude called the guesthouse; the mock clerk asks for the fee
+        assert any(x["kind"] == "done" and x["phase"] == "arrival" for x in s["agent"])
+
+        async def broken(*_):
+            raise RuntimeError("model down")
+        agent.run = broken  # Claude fails: the scripted flow takes over
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        assert c.get("/state").json()["pick"]["flight"] == "DL1946"
+    finally:
+        agent.enabled, agent.run = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -426,6 +474,7 @@ CASES = [
     ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
     ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
+    ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
