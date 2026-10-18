@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, call, flights, policy, tap, verify, voice
+from . import agent, call, flights, policy, status, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +65,7 @@ class State:
         self.vault: list[dict] = seed_vault()
         self.agent_log: list[dict] = []  # what Claude did this task: thoughts, tool calls, results
         self.call_started = False
+        self.before_answer: dict | None = None  # the screen an /ask answer covered
 
 
 def seed_vault() -> list[dict]:
@@ -209,6 +210,32 @@ async def run_agent(phase: str, facts: dict, tools: dict) -> bool:
     return True
 
 
+async def flight_status(flight: str) -> dict:
+    """The trip's own flights (demo data) answer from the trip; any other flight is live from FlightAware."""
+    f, b = flight.replace(" ", "").upper(), MOCK["booking"]
+    if f == b["flight"]:
+        cancelled = S.task_id is not None
+        return {"flight": f, "airline": b["airline"], "route": f"{b['from']}-{b['to']}", "date": b["date"],
+                "status": "cancelled" if cancelled else "scheduled", "scheduled_departure": b["departs"],
+                "airline_rebooking": MOCK["airline_offer"] if cancelled else None, "source": "trip"}
+    o = next((o for o in [*S.options, *MOCK["options"]] if o["flight"] == f), None)
+    if o:
+        booked = S.pick is not None and S.pick["flight"] == f and S.stage not in ("cancelled", "offer", "searching")
+        return {"flight": f, "airline": o["airline"], "route": f"{b['from']}-{b['to']}", "day": o["day"],
+                "status": "booked for the traveler" if booked else "scheduled",
+                "scheduled_departure": o["departs"], "scheduled_arrival": o["arrives"], "source": "trip"}
+    if not status.enabled():
+        return {"flight": f, "status": "unknown (no live status configured)"}
+    try:
+        return await status.fetch(f)
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        return {"flight": f, "status": "unavailable", "error": str(e)[:200]}
+
+
+async def read_vault(_: dict | None = None) -> dict:
+    return {"items": [{"type": v["type"], "title": v["title"], "data": v["data"]} for v in S.vault]}
+
+
 def brief(o: dict) -> dict:
     return {k: o.get(k) for k in ("id", "airline", "flight", "departs", "arrives", "day", "stops", "price_usd",
                                   "verdict", "reason")}
@@ -216,18 +243,9 @@ def brief(o: dict) -> dict:
 
 async def plan_with_agent(b: dict) -> bool:
     """Claude checks the flight, searches and chooses. False if it failed (the scripted plan runs instead)."""
-    async def check_flight_status(i: dict) -> dict:
-        if i["flight"].replace(" ", "").upper() != b["flight"]:
-            return {"flight": i["flight"], "status": "unknown"}
-        return {"flight": b["flight"], "route": f"{b['from']}-{b['to']}", "date": b["date"], "status": "cancelled",
-                "airline_rebooking": MOCK["airline_offer"], "source": "mock"}
-
     async def search_flights(i: dict) -> dict:
         found = await search(i["origin"].upper(), i["destination"].upper(), i.get("date"))
         return {"source": S.flights_source, "options": [brief(o) for o in found]}
-
-    async def read_vault(_: dict) -> dict:
-        return {"items": [{"type": v["type"], "title": v["title"], "data": v["data"]} for v in S.vault]}
 
     async def choose_flight(i: dict) -> dict:
         o = next((o for o in S.options if o["id"] == i["option_id"]), None)
@@ -245,7 +263,7 @@ async def plan_with_agent(b: dict) -> bool:
     facts = {"traveler": MOCK["traveler"]["name"], "now": datetime.now(LA).isoformat(timespec="minutes"),
              "cancelled_booking": b, "mandate": S.mandate.instruction, "budget_left_usd": S.ledger.remaining(S.mandate),
              "deadline": MOCK["deadline"]}
-    ok = await run_agent("plan", facts, {"check_flight_status": check_flight_status, "search_flights": search_flights,
+    ok = await run_agent("plan", facts, {"check_flight_status": lambda i: flight_status(i["flight"]), "search_flights": search_flights,
                                          "read_vault": read_vault, "choose_flight": choose_flight})
     if ok and not S.options:  # finished without searching: rank anyway so the glasses have options
         await search(b["from"], b["to"])
@@ -531,7 +549,9 @@ async def input_(g: Gesture):
     # (dashboard buttons) keep working as before.
     if g.screen_id and g.screen_id != S.screen["screen_id"]:
         return {"handled": False, "stage": stage, "reason": f"stale screen: {g.screen_id}, now {S.screen['screen_id']}"}
-    if gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
+    if gesture == "press" and S.screen["screen_id"] == "answer":
+        await restore_screen(S.before_answer)
+    elif gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
     elif gesture == "press" and stage == "resolved":
         await show("idle", [], {})
@@ -551,6 +571,61 @@ async def input_(g: Gesture):
     else:
         return {"handled": False, "stage": stage}
     return {"handled": True, "stage": S.stage}
+
+
+class Ask(BaseModel):
+    question: str
+    show: bool = True  # put the short answer on the glasses
+
+
+ANSWER_S = 10
+
+
+async def restore_screen(prev: dict, after_s: float = 0) -> None:
+    """Put back what the glasses showed before an answer, unless something newer replaced it."""
+    await asyncio.sleep(after_s)
+    if S.screen["screen_id"] == "answer":
+        S.screen = prev
+        await publish("hud.screen", S.screen)
+
+
+@app.post("/ask")
+async def ask(q: Ask):
+    """A free question to the agent: flight status, vault, spending, what it's doing. Read-only tools:
+    it never books, pays or calls. The short answer goes on the glasses unless a spend is waiting."""
+    question = q.question.strip()[:500]
+    if not question:
+        raise HTTPException(400, "empty question")
+    if not agent.enabled():
+        raise HTTPException(503, "needs AGENT_MODE=claude and ANTHROPIC_API_KEY")
+
+    async def read_ledger(_: dict) -> dict:
+        return S.ledger.view(S.mandate)
+
+    async def read_task(_: dict) -> dict:
+        return {"stage": S.stage, "task_id": S.task_id, "pick": S.pick and brief(S.pick), "outcome": S.outcome,
+                "glasses_show": S.screen["lines"]}
+
+    first = len(S.agent_log)
+    facts = {"question": question, "traveler": MOCK["traveler"]["name"],
+             "now": datetime.now(LA).isoformat(timespec="minutes")}
+    try:
+        out = json.loads(await agent.run("ask", facts, {
+            "read_vault": read_vault, "check_flight_status": lambda i: flight_status(i["flight"]),
+            "read_ledger": read_ledger, "read_task": read_task}, agent_step))
+    except (anthropic.APIError, RuntimeError, TimeoutError, ValueError, KeyError) as e:
+        await publish("agent.failed", {"phase": "ask", "error": str(e)[:300]})
+        raise HTTPException(502, f"agent failed: {e}"[:300])
+    lines = [line[:24] for line in out["glasses"][:3]] or ["No answer"]
+    await publish("agent.answer", {"question": question, "answer": out["answer"], "glasses": lines})
+    shown = q.show and S.stage not in ("offer", "fee")  # never cover a screen that's waiting for a gesture
+    if shown:
+        prev = S.screen if S.screen["screen_id"] != "answer" else S.before_answer
+        S.before_answer = prev
+        await show("answer", lines, {"press": "dismiss"}, ANSWER_S)
+        run_later(restore_screen(prev, ANSWER_S))
+    return {"question": question, "answer": out["answer"], "glasses": lines, "shown": shown,
+            "steps": S.agent_log[first:]}
 
 
 class VoiceInput(BaseModel):

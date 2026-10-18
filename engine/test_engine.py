@@ -458,6 +458,56 @@ def test_agent_decides(c):
         c.post("/demo/reset")
 
 
+def test_ask(c):
+    """POST /ask: Claude answers with read-only tools; trip flights come from the trip, others from
+    FlightAware; the answer shows on the glasses and a tap puts the old screen back, but it never
+    covers a screen waiting for a gesture. No network: agent.run and status.fetch are stubbed."""
+    import json as j
+
+    from app import agent, status
+
+    seen = {}
+
+    async def fake_claude(phase, facts, tools, on_step):
+        assert phase == "ask" and set(tools) == {"read_vault", "check_flight_status", "read_ledger", "read_task"}
+        for f in ("UA183", "DL1946", "UA1"):
+            seen[f] = await tools["check_flight_status"]({"flight": f})
+        seen["vault"] = await tools["read_vault"]({})
+        seen["ledger"] = await tools["read_ledger"]({})
+        return j.dumps({"answer": "UA1 is delayed 89 minutes, gate G1.", "glasses": ["UA1 delayed 89 min", "Gate G1"]})
+
+    async def live(flight):
+        return {"flight": flight, "status": "Delayed", "gate": "G1", "source": "flightaware"}
+
+    real = (agent.enabled, agent.run, status.enabled, status.fetch)
+    agent.enabled, agent.run, status.enabled, status.fetch = (lambda: True), fake_claude, (lambda: True), live
+    try:
+        c.post("/demo/reset")
+        r = c.post("/ask", json={"question": "Is UA1 on time?"}).json()
+        assert r["glasses"] == ["UA1 delayed 89 min", "Gate G1"] and r["shown"]
+        assert seen["UA183"]["status"] == "scheduled" and seen["DL1946"]["source"] == "trip"
+        assert seen["UA1"]["source"] == "flightaware" and seen["ledger"]["remaining_usd"] == 300
+        assert len(seen["vault"]["items"]) == 2
+        assert c.get("/state").json()["screen"]["screen_id"] == "answer"
+        c.post("/input", json={"gesture": "press"})  # dismiss: back to ready, the flow didn't start
+        s = c.get("/state").json()
+        assert s["screen"]["screen_id"] == "ready" and s["stage"] == "ready"
+
+        agent.enabled = lambda: False  # scripted plan for this part; /ask itself is still stubbed below
+        for g in ("press", "press"):  # booking offer waiting for a hold
+            c.post("/input", json={"gesture": g})
+        agent.enabled = lambda: True
+        r = c.post("/ask", json={"question": "Status of UA183?"}).json()
+        assert not r["shown"] and c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+        assert seen["UA183"]["status"] == "cancelled"
+
+        agent.enabled = lambda: False
+        assert c.post("/ask", json={"question": "hi"}).status_code == 503
+    finally:
+        agent.enabled, agent.run, status.enabled, status.fetch = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -475,6 +525,7 @@ CASES = [
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
     ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
     ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
+    ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
