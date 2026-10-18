@@ -19,6 +19,7 @@ Clerk: ..."), Claude checks the outcome against it; a door code reaches the glas
 | `POST /call/webhook` | ElevenLabs post-call webhook | ElevenLabs' own `post_call_transcription` / `call_initiation_failure` payload, signed with `ELEVENLABS_WEBHOOK_SECRET` (401 otherwise). The engine builds the transcript, has Claude check it and finishes the task. Needs `task_id` in the call's dynamic variables (the engine sets it) |
 | `POST /merchant/payment-request` | Mock merchant | `{"merchant", "amount", "mcc"}` → paid, or refused by the mandate |
 | `GET /.well-known/http-message-signatures-directory` | Merchants, dashboard | The agent's Ed25519 public key (JWKS) for checking signed payment requests |
+| `GET /vault` | Dashboard, orchestrator agent | `{items: [{id, type, title, saved_at, source, data}]}`. Pre-seeded with the UA183 boarding pass and the guesthouse confirmation (`source: "traveler"`); the flow adds the new boarding pass and the call transcript with its checked outcome (`source: "agent"`). Reset restores the pre-seeded items. Also in `state.snapshot` as `vault` |
 | `GET /ledger` | Dashboard | Mandate, spends, refunds, consent records, denied attempts, remaining budget |
 | `POST /mandate` | Phone, after the passkey sign-in | Mandate fields to override → the mandate |
 | `GET /flights/search` | Anyone | Mock options, ranked by the policy engine |

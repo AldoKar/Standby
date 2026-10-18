@@ -277,6 +277,36 @@ def test_signed_payments(c):
     c.post("/demo/reset")
 
 
+def test_vault(c):
+    c.post("/demo/reset")
+    seeded = c.get("/vault").json()["items"]
+    assert [i["type"] for i in seeded] == ["boarding_pass", "lodging_confirmation"]
+    assert seeded[1]["data"]["confirmation"] == "48213" and all(i["source"] == "traveler" for i in seeded)
+
+    # the glasses flow saves the new boarding pass and the call
+    c.post("/input", json={"gesture": "press"})
+    c.post("/input", json={"gesture": "press"})
+    c.post("/input", json={"gesture": "hold"})
+    wait_for(c, "fee")
+    c.post("/input", json={"gesture": "hold"})
+    wait_for(c, "resolved")
+    items = c.get("/vault").json()["items"]
+    new_pass, call_log = items[2], items[3]
+    assert new_pass["type"] == "boarding_pass" and new_pass["data"]["flight"] == "DL1946"
+    assert new_pass["data"]["replaces"] == "UA183"
+    assert new_pass["data"]["payment_reference"] and new_pass["source"] == "agent"
+    assert call_log["type"] == "call_transcript" and call_log["data"]["door_code"] == "4417" and call_log["data"]["summary"]
+
+    # a real call's transcript is stored with its checked outcome
+    c.post("/call/completed", json={"held": False, "transcript": "Clerk: We're full tonight."})
+    last = c.get("/vault").json()["items"][-1]
+    assert last["data"]["transcript"] == "Clerk: We're full tonight." and last["data"]["held"] is False
+
+    # reset brings back only what the traveler had
+    c.post("/demo/reset")
+    assert len(c.get("/vault").json()["items"]) == 2
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -289,6 +319,7 @@ CASES = [
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
+    ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 

@@ -125,6 +125,9 @@ SAMPLES = {
                           "Clerk: I have nothing under 48213. R-I-V-E-R-A? No, nothing.\nAgent: I'll check and call back.",
     # Expected: verified, code 4417. A short real call shouldn't hide a correct code.
     "short": "Agent: Hi, I'm an AI assistant calling for Alex.\nClerk: Room is held. Door code is 4417.",
+    # Expected: not held, no spend (SPEC #3).
+    "no_rooms": "Agent: Hi, I'm an AI assistant calling for Alex Rivera, confirmation 48213. Can you hold the room "
+                "for a late arrival?\nClerk: I'm sorry, we're full tonight, his room was released.\nAgent: Understood, thank you.",
     # Expected: not held, unresolved (SPEC #4).
     "call_back": "Agent: Hi, I'm an AI assistant calling for Alex Rivera, confirmation 48213. Can you hold the room?\n"
                  "Clerk: I can't do that now, call back tomorrow morning.\nAgent: Understood, thank you.",
