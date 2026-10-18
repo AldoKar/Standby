@@ -1,2 +1,5 @@
 uagents
+uagents-core
+anthropic
+python-dotenv
 httpx
