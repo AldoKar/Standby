@@ -62,7 +62,7 @@ The same flow runs from a chat in [ASI:One](https://asi1.ai), with interactive c
 | Caller | `standby-caller` | `agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07` | Places disclosed AI phone calls to businesses with no API; hired and paid $1.99 per call over the Agent Payment Protocol |
 
 - **Chat Protocol:** `AgentChatProtocol 0.3.0`. **Payment Protocol:** `AgentPaymentProtocol 0.1.0`.
-- **Try it in ASI:One:** shared chat with the whole flow: https://asi1.ai/shared-chat/ab2f568d-d49e-4ec4-a279-5bb77195afbd
+- **Try it in ASI:One:** shared chat with the whole flow: https://asi1.ai/shared-chat/908014af-42c3-4614-8370-98459629cda1
 - Details, versions and how to run the agents: [`agents/README.md`](agents/README.md).
 
 ## Architecture
