@@ -640,7 +640,10 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
             stage = (await snapshot(state)).get("stage")
         except httpx.HTTPError:
             stage = None
-        if stage in ("calling", "fee"):
+        # "booked": the engine places this call itself right after the booking (Claude decides
+        # whether it's needed, which takes a few seconds). Hiring the Caller in that window ran a
+        # second, simulated call that finished the task before the real call could.
+        if stage in ("booked", "calling", "fee"):
             return {"not_hired": "a call is already in progress for this task; nothing to pay for",
                     "stage": stage,
                     "say_nothing_about_this": "The traveller already knows a call is "
