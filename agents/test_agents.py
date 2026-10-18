@@ -13,7 +13,10 @@ import json
 import logging
 import sys
 import warnings
+from datetime import timedelta
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).parent / "orchestrator"))
 
@@ -27,6 +30,22 @@ GREEN, RED, DIM, CYAN, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[36m", "
 checks = 0
 
 
+class Store:
+    """ctx.storage, in memory."""
+
+    def __init__(self):
+        self.d: dict = {}
+
+    def get(self, key):
+        return self.d.get(key)
+
+    def set(self, key, value):
+        self.d[key] = value
+
+    def remove(self, key):
+        self.d.pop(key, None)
+
+
 class Ctx:
     """Stands in for a uAgents Context. `sent` records outbound messages so tests can
     assert on them without a running agent."""
@@ -34,6 +53,7 @@ class Ctx:
 
     def __init__(self):
         self.sent: list = []
+        self.storage = Store()
 
     async def send(self, to, message):
         self.sent.append((to, message))
@@ -178,6 +198,50 @@ async def test_guardrails() -> None:
         orch.snapshot = real_snapshot
     assert res.get("not_hired") and ctx.sent == [], res
     ok("the Caller is not hired between the booking and the engine's own call")
+    # The booking turn must not let the model tell the traveller it hired the Caller:
+    # the engine places that call itself, and nothing was paid to anyone.
+    await reset()
+    s5 = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s5, "get_booking", {})
+    paid = await orch.run_tool(Ctx(), s5, "pay", {"approved": True, "fee_allowance_usd": 50})
+    assert "Standby is placing" in paid.get("doing_now", ""), paid
+    assert "no Caller agent was hired" in paid.get("doing_now", ""), paid
+    assert "1.99" not in json.dumps(paid), paid
+    ok("the booking turn says the engine is calling, not that a Caller was hired")
+
+    # An unreachable engine must not be a licence to spend. Fail closed mid-task.
+    s6 = {"task_id": "task-live", "approval_id": None, "history": []}
+    saved_addr, saved_snapshot = orch.CALLER_ADDRESS, orch.snapshot
+    orch.CALLER_ADDRESS = "agent1qtest"
+
+    async def unreachable(_state):
+        raise httpx.ConnectError("engine down")
+
+    orch.snapshot = unreachable
+    try:
+        ctx = Ctx()
+        res = await orch.run_tool(ctx, s6, "hire_caller", {"purpose": "hold the room"})
+        assert "not_hired" in res, res
+        assert not ctx.sent, "an unreachable engine must not trigger a paid call"
+    finally:
+        orch.CALLER_ADDRESS, orch.snapshot = saved_addr, saved_snapshot
+    ok("an unreachable engine mid-task refuses the hire instead of spending anyway")
+
+    # "hired" only means a job went out. If the Caller never charged — it timed out, or
+    # never asked — the reply must not say a fee was covered on the traveller's behalf.
+    await reset()
+    s7 = {"task_id": None, "approval_id": None, "history": []}
+    saved_addr, saved_timeout = orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S
+    orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S = "agent1qtest", 0.2
+    try:
+        res = await orch.run_tool(Ctx(), s7, "hire_caller", {"purpose": "hold the room"})
+        assert "fee_paid" not in res, res
+        assert "no_fee_was_paid" in res and "say_nothing_about_money" in res, res
+        assert "Payment Protocol" not in json.dumps({k: v for k, v in res.items()
+                                                     if k != "say_nothing_about_money"}), res
+    finally:
+        orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S = saved_addr, saved_timeout
+    ok("a hire the Caller never charged for reports no fee instead of inventing one")
 
     # running the demo twice without a manual reset must still work
     s4 = {"task_id": None, "approval_id": None, "history": []}
@@ -218,6 +282,93 @@ async def test_guardrails() -> None:
     a = await orch.run_tool(Ctx(), adopted, "request_approval", {})
     assert a["pending"] and a["amount_usd"] == 215, a
     ok("a relay with a stale task adopts the one in flight, so its approve reaches the pending spend")
+
+    # ASI:One keys every chat with the same relay address, so a new chat opened the next
+    # morning used to arrive holding last night's transcript — and the agent answered a
+    # fresh "UA183 is cancelled" with "already handled", never calling get_booking.
+    ctx, who = Ctx(), "agent1relay"
+    orch.save(ctx, who, {"task_id": "task-old", "approval_id": None,
+                         "history": [{"role": "user", "content": "UA183 is cancelled"},
+                                     {"role": "assistant", "content": "Booked DL1402, room held."}]})
+    assert orch.load(ctx, who)["history"], "a turn moments later is still the same chat"
+    stale = ctx.storage.get(f"chat:{who}")
+    stale["last_turn"] = (orch.datetime.now(orch.timezone.utc)
+                          - timedelta(seconds=orch.CHAT_TTL_S + 60)).isoformat()
+    ctx.storage.set(f"chat:{who}", stale)
+    assert orch.load(ctx, who) == {"task_id": None, "approval_id": None, "history": []}
+    ctx.storage.set(f"chat:{who}", {"task_id": "task-old", "approval_id": None, "history": [1]})
+    assert orch.load(ctx, who)["task_id"] is None, "state saved before last_turn existed is stale too"
+    ok("a chat opened long after the last turn starts clean instead of 'already handled'")
+
+    # the explicit signal, when ASI:One sends one: a new session drops the old transcript
+    ctx, who = Ctx(), "agent1relay2"
+    orch.save(ctx, who, {"task_id": "task-old", "approval_id": None,
+                         "history": [{"role": "user", "content": "old"}]})
+    await orch.handle_message(ctx, who, orch.ChatMessage(
+        timestamp=orch.datetime.now(orch.timezone.utc), msg_id=orch.uuid4(),
+        content=[orch.StartSessionContent(type="start-session")]))
+    assert ctx.storage.get(f"chat:{who}") is None, ctx.storage.d
+    ok("a start-session clears the previous conversation held under the same relay address")
+
+
+# ---------- the Payment Protocol handshake, narrated ----------
+
+async def test_handshake_narration() -> None:
+    """A hire's protocol steps reach the traveller's chat as they happen, written by code,
+    and Claude is told they were shown. Drives the buyer-side handlers directly."""
+    from uagents_core.contrib.protocols.payment import (CompletePayment, Funds, RejectPayment,
+                                                        RequestPayment)
+    section("Payment Protocol handshake, narrated in the chat")
+    saved = orch.CALLER_ADDRESS
+    orch.CALLER_ADDRESS = caller = "agent1qcaller"
+    ask = lambda amount: RequestPayment(  # noqa: E731
+        accepted_funds=[Funds(amount=amount, currency="USD", payment_method="fet_direct")],
+        recipient=caller, deadline_seconds=120, reference="job-1", description="one call")
+
+    def chat(ctx: Ctx) -> list[str]:
+        return ["".join(c.text for c in m.content if hasattr(c, "text")).strip("`")
+                for to, m in ctx.sent if to == "traveller"]
+
+    async def until(cond):
+        for _ in range(100):
+            if cond():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("handler never ran")
+
+    try:
+        ctx = Ctx()
+        s = {"task_id": None, "approval_id": None, "history": [], "reply_to": "traveller"}
+        hire = asyncio.create_task(orch.run_tool(ctx, s, "hire_caller", {"purpose": "hold the room"}))
+        await until(lambda: orch.open_job())
+        await orch.on_payment_request(ctx, caller, ask("1.99"))
+        tx = next(m.transaction_id for to, m in ctx.sent if type(m).__name__ == "CommitPayment")
+        await orch.on_payment_complete(ctx, caller, CompletePayment(transaction_id=tx))
+        await orch.handle_message(ctx, caller, orch.ChatMessage(
+            timestamp=orch.datetime.now(orch.timezone.utc), msg_id=orch.uuid4(),
+            content=[orch.TextContent(type="text", text="Held.\n" + json.dumps(
+                {"held": True, "door_code": "4417", "verified": True, "fee_usd": 40,
+                 "attempts": 1, "mode": "mock"}))]))
+        res = await hire
+        lines = chat(ctx)
+        assert [l.split(" · ")[0] for l in lines] == [
+            "→ @standby-caller", "← RequestPayment", "→ CommitPayment",
+            "← CompletePayment", "← outcome"], lines
+        assert f"tx {tx}" in lines[2] and "$2.00/call cap" in lines[2], lines[2]
+        assert "door code 4417" in lines[4] and "simulated call" in lines[4], lines[4]
+        assert res["traveller_already_saw"] == lines and res["fee_paid"].startswith("1.99 USD"), res
+        ok("job → RequestPayment → CommitPayment → CompletePayment → outcome, one line each, in order")
+
+        ctx = Ctx()
+        hire = asyncio.create_task(orch.run_tool(ctx, s, "hire_caller", {"purpose": "hold the room"}))
+        await until(lambda: orch.open_job())
+        await orch.on_payment_request(ctx, caller, ask("9.99"))
+        res = await asyncio.wait_for(hire, 1)  # not the 45s timeout
+        assert any(isinstance(m, RejectPayment) for _, m in ctx.sent)
+        assert chat(ctx)[-1].startswith("→ RejectPayment") and "not hired" in res["outcome"]["error"], res
+        ok("a price over the cap is rejected, shown, and ends the hire at once")
+    finally:
+        orch.CALLER_ADDRESS = saved
 
 
 # ---------- interactive cards ----------
@@ -315,6 +466,21 @@ async def test_live() -> None:
     assert snap and snap["stage"] == "resolved"
     ok("the call completes and the task resolves")
 
+    # The reported bug, from the model's side: with a finished trip in the transcript, a
+    # fresh cancellation was answered "already handled" out of memory, and get_booking —
+    # the only thing that resets the engine — was never called. load() now drops a stale
+    # transcript, but the prompt has to hold even when the history legitimately survives.
+    done_task = s["task_id"]
+    s["history"] = [{"role": "user", "content": "approve"},
+                    {"role": "assistant", "content": "Booked DL1946. Room held, door code 4417."}]
+    reply3 = await orch.think(Ctx(), s, s["history"]
+                              + [{"role": "user", "content": "My UA183 got cancelled, handle it"}])
+    print(f"{DIM}{reply3}{RESET}")
+    assert s["task_id"] and s["task_id"] != done_task, (
+        f"a fresh cancellation must start a new task, not answer from the last one: {reply3}")
+    assert "215" in reply3, f"the new task's figures must come from the engine: {reply3}"
+    ok("a cancellation after a finished trip starts a new task instead of 'already handled'")
+
 
 async def main() -> None:
     live = "--live" in sys.argv
@@ -328,6 +494,7 @@ async def main() -> None:
     await test_ask_live(live)
     resolved = await test_tools()
     await test_guardrails()
+    await test_handshake_narration()
     await test_cards(resolved)
     test_selection_parsing()
     if live:
