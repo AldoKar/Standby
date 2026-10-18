@@ -71,7 +71,11 @@ before ASI:One can reach it. Run both agents on the Vultr box under systemd for 
    booking plan and spin for minutes while the agent sits idle. The agent's replies name
    the handle in the ask for this reason (`ASI_HANDLE`, default `@standby`).
 4. You should get the three options with two struck through and the policy reason for each.
-5. Reply `@standby approve`. You get two messages: the booking, then the call outcome with the door
+5. Reply `@standby approve`. You get two messages. The first confirms the booking **and
+   breaks the news the traveller doesn't have yet** — the guesthouse front desk closes at
+   11 PM, they land at 10:40, so it's calling to hold the room. That reveal is the point
+   of the demo (`docs/SPEC.md` step 5); without it the phone call appears from nowhere.
+   Then: the booking, then the call outcome with the door
    code and the ledger. The session ends on that second message.
 6. `status?` at any point answers from engine state rather than from the transcript.
 7. Share the chat and paste the URL into the table at the top.

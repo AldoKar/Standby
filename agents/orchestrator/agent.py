@@ -88,6 +88,16 @@ How to reply:
 afterwards and the fee allowance, then ask them to reply "REPLY_WITH".
 - Always include the handle when you ask them to reply. A reply without it never reaches \
 you: the chat sends it to the traveller's own assistant instead.
+- When a tool reports a problem found downstream, lead with it before anything else. The \
+traveller has never heard of the place you are about to phone, so say what it is, why it \
+is a problem for them tonight, and that you are calling about it. A phone call must never \
+appear out of nowhere.
+- Never ask the traveller whether to make a call. The engine places it automatically.
+- Say each thing once. You may write before and after a tool call, and both halves reach \
+the traveller as one message, so do not restate what you have already told them.
+- Once pay reports a call in progress, you are done for this turn: call no further tools \
+and write no further paragraphs. The outcome is reported to the traveller separately when \
+the call ends.
 - Quote money figures exactly as the tool gave them. Never add, subtract or estimate an \
 amount yourself.
 - Say "book" and "approve", never "pay", "card" or "Visa".
@@ -145,7 +155,9 @@ TOOLS = [
         "description": (
             "Record the traveller's answer to the pending spend. The engine runs the "
             "mandate check and executes the charge; you are only passing the answer "
-            "through. Only call this once the traveller has clearly said yes or no."
+            "through. Only call this once the traveller has clearly said yes or no. "
+            "After a booking goes through, the result also carries any problem the engine "
+            "spotted further down the trip and what it is doing about it."
         ),
         "input_schema": {
             "type": "object",
@@ -169,8 +181,9 @@ TOOLS = [
         "name": "call_provider",
         "description": (
             "Place a disclosed AI phone call to a business line that has no API, to hold "
-            "a room or confirm a booking. Call this once a flight is booked and something "
-            "downstream needs a phone call."
+            "a room or confirm a booking. The engine starts this call by itself once a "
+            "booking is paid, so do NOT call this tool when pay has already reported a "
+            "call in progress — only when a call is needed and none has started."
         ),
         "input_schema": {
             "type": "object",
@@ -524,13 +537,25 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
         r.raise_for_status()
         a = r.json()
         state["approval_id"] = None
-        state["awaiting_outcome"] = a.get("status") == "approved" and a.get("kind") == "booking"
-        return {
+        booked = a.get("status") == "approved" and a.get("kind") == "booking"
+        state["awaiting_outcome"] = booked
+        out = {
             "status": a.get("status"),  # approved, rejected or denied by the mandate
             "kind": a.get("kind"),
             "amount_usd": a.get("amount"),
             "merchant": a.get("merchant"),
         }
+        if booked:
+            # Booking is not the end of it. The engine now looks downstream and finds the
+            # problem the traveller doesn't know about yet — a front desk that closes
+            # before they land. Wait for it so the reply can break that news, instead of
+            # announcing a phone call to a guesthouse nobody has mentioned.
+            snap = await wait_for_stage(state, ("calling", "fee", "resolved"), 10)
+            lines = (snap.get("screen") or {}).get("lines") or []
+            if snap.get("stage") in ("calling", "fee", "resolved") and lines:
+                out["problem_found_downstream"] = lines
+                out["doing_now"] = "calling them to hold the room"
+        return out
 
     if name == "call_provider":
         # The engine starts the call itself once a booking is paid (contract/api.md has no
@@ -641,6 +666,23 @@ async def think(ctx: Context, state: dict, messages: list[dict]) -> str:
 
     said.append("I'm still working on that. Ask me for the status in a moment.")
     return "\n\n".join(said).strip()
+
+
+async def wait_for_stage(state: dict, stages: tuple[str, ...], timeout: float) -> dict:
+    """Poll until the engine reaches one of these stages, or give up and return whatever
+    it last said."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    snap: dict = {}
+    while loop.time() < deadline:
+        try:
+            snap = await snapshot(state)
+        except httpx.HTTPError:
+            break
+        if snap.get("stage") in stages:
+            return snap
+        await asyncio.sleep(0.8)
+    return snap
 
 
 async def wait_for_outcome(ctx: Context, state: dict) -> dict | None:
