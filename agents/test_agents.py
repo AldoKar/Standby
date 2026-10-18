@@ -55,6 +55,26 @@ async def reset() -> None:
 
 # ---------- the engine tools ----------
 
+async def test_ask_live(live: bool) -> None:
+    """ask_live relays a free question to the engine's POST /ask. It never touches the glasses
+    (show: false) and never starts a task; without Claude on the engine it says so instead of raising."""
+    section("ask_live")
+    await reset()
+    s = {"task_id": None, "approval_id": None, "history": []}
+    assert "ask_live" in {t["name"] for t in orch.TOOLS}
+    assert (await orch.run_tool(Ctx(), s, "ask_live", {"question": "  "}))["error"] == "no question"
+    before = (await orch.http.get("/state")).json()
+    d = await orch.run_tool(Ctx(), s, "ask_live", {"question": "Is UA1 on time? Which gate?"})
+    after = (await orch.http.get("/state")).json()
+    assert ("answer" in d) or d["error"].startswith("live answers unavailable"), d
+    assert after["screen"] == before["screen"] and after["stage"] == "ready" and after["task_id"] is None
+    ok("ask_live answers (or says it can't), leaves the glasses alone and starts no task")
+    if live:
+        assert d.get("answer") and d.get("live"), f"needs ANTHROPIC_API_KEY and AEROAPI_KEY on the engine: {d}"
+        print(f"{DIM}{d['answer']}{RESET}")
+        ok("ask_live: a real flight answered live from FlightAware")
+
+
 async def test_tools() -> dict:
     section("engine tools")
     await reset()
@@ -276,6 +296,7 @@ async def main() -> None:
               f"  cd engine && uvicorn app.main:app --port 8000")
         sys.exit(1)
 
+    await test_ask_live(live)
     resolved = await test_tools()
     await test_guardrails()
     await test_cards(resolved)
