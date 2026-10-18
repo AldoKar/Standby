@@ -75,7 +75,7 @@ The same flow runs from a chat in [ASI:One](https://asi1.ai), with interactive c
                    ▼                         ▼      ▼
               ┌───────────── engine (FastAPI on Vultr, HTTPS) ─────────────┐
               │ Claude agent loop (plan · arrival · claim · ask)           │
-              │ policy.py: mandate, budget, ask-over limit  (money rules)  │
+              │ policy.py: mandate rules: budget, merchants, expiry        │
               │ claims.py: benefit rules  ·  tap.py: signed payments       │
               │ SSE /events → glasses + dashboard  ·  Vault  ·  ledger     │
               └──┬───────────┬────────────┬────────────┬──────────────────┘
