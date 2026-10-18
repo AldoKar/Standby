@@ -139,7 +139,7 @@ async def offer_pick() -> dict | None:
 
 async def request_spend(kind: str, amount: float, merchant: str, mcc: str, reason: str, screen: tuple) -> dict:
     """One path for every spend: mandate check, then pay silently, deny, or ask the wearer."""
-    decision, why = policy.check_spend(S.mandate, S.ledger, amount, mcc, S.fee_allowance if kind == "fee" else 0)
+    decision, why, line = policy.check_spend(S.mandate, S.ledger, amount, mcc, S.fee_allowance if kind == "fee" else 0)
     await publish("mandate.checked", {"kind": kind, "amount": amount, "remaining": S.ledger.remaining(S.mandate),
                                       "result": decision, "reason": why})
     a = {"approval_id": f"apr-{uuid.uuid4().hex[:8]}", "task_id": S.task_id, "kind": kind, "amount": amount,
@@ -148,7 +148,7 @@ async def request_spend(kind: str, amount: float, merchant: str, mcc: str, reaso
     if decision == "deny":
         a["status"] = "denied"
         S.ledger.denied.append({"amount": amount, "merchant": merchant, "reason": why, "ts": now()})
-        await show("denied", [f"${amount:g} {reason}"[:24], "Over your budget", "Confirm on phone"], {}, 8)
+        await show("denied", [f"${amount:g} {reason}"[:24], line, "Confirm on phone"], {}, 8)
         await after_answer(a)
         return a
     if decision == "allow":
@@ -442,11 +442,18 @@ class PaymentRequest(BaseModel):
 
 @app.post("/merchant/payment-request")
 async def merchant_payment(p: PaymentRequest):
-    decision, why = policy.check_spend(S.mandate, S.ledger, p.amount, p.mcc)
-    covered = next((a for a in S.approvals.values() if a["status"] == "approved" and a["merchant"] == p.merchant
-                    and a["amount"] == p.amount), None)
-    if decision == "deny" or (decision == "ask" and not covered):
-        raise HTTPException(403, why if decision == "deny" else "needs the wearer's approval first")
+    # An approved spend is already checked and in the ledger (pay()); the merchant may charge it once.
+    covered = next((a for a in S.approvals.values() if a["status"] == "approved" and not a.get("charged")
+                    and a["merchant"] == p.merchant and a["amount"] == p.amount and a["mcc"] == p.mcc), None)
+    if covered:
+        covered["charged"] = True
+        return {"paid": True, "token_id": S.mandate.token_id, "reason": f"covered by {covered['approval_id']}"}
+    decision, why, _ = policy.check_spend(S.mandate, S.ledger, p.amount, p.mcc)
+    if decision != "allow":
+        why = why if decision == "deny" else "needs the wearer's approval first"
+        S.ledger.denied.append({"amount": p.amount, "merchant": p.merchant, "reason": why, "ts": now()})
+        raise HTTPException(403, why)
+    await pay({"amount": p.amount, "merchant": p.merchant, "mcc": p.mcc, "kind": "merchant"})
     return {"paid": True, "token_id": S.mandate.token_id, "reason": why}
 
 

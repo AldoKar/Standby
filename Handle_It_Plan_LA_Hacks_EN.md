@@ -1,6 +1,6 @@
-# Handle It — LA Hacks AI Hackathon Plan
+# Standby — LA Hacks AI Hackathon Plan
 
-> **Most AI assistants stop when there isn't an API. Handle It picks up the phone.**
+> **Most AI assistants stop when there isn't an API. Standby picks up the phone.**
 
 Deadline: **Sunday, October 18, 12:00 PM**. Deliverables: Devpost + `.ehpk` uploaded as a **Beta** build on Even Hub.
 
@@ -10,7 +10,7 @@ Deadline: **Sunday, October 18, 12:00 PM**. Deliverables: Devpost + `.ehpk` uplo
 
 An AI agent that **travels with you through the whole trip**: it books for you, guides you at the airport and, when something goes wrong, fixes it — even when the fix requires talking to a human on the phone.
 
-> "Handle It is with you for the whole trip: it books, it guides you, and when something goes wrong, it fixes it — even if it has to pick up the phone."
+> "Standby is with you for the whole trip: it books, it guides you, and when something goes wrong, it fixes it — even if it has to pick up the phone."
 
 The user is wearing Even G2 glasses. **One engine** (search → approve with a tap → pay → save) powers every stage; only the moment changes.
 
@@ -65,7 +65,7 @@ FastAPI backend (Vultr) ──► Web dashboard (activity + HUD mirror)
   · Event bus
   · Vault (Supabase)
         ⇅  REST
-Handle It Agent (Agentverse + Claude)  ◄── ASI:One (chat)
+Standby Agent (Agentverse + Claude)  ◄── ASI:One (chat)
         ▲  ctx.send
 Monitor Agent (Agentverse, reactive)
         │
@@ -77,7 +77,7 @@ Tools: Vault · Mock flights · ElevenLabs ──☎──► Simulated airline
 ### How G2 and Fetch connect
 
 1. The judge taps to accept the alert (or says "Handle it") → the app sends the request to the backend.
-2. The backend calls the **Handle It Agent** (`@agent.on_rest_post`).
+2. The backend calls the **Standby Agent** (`@agent.on_rest_post`).
 3. The agent reads the Vault, searches flights and picks the best option.
 4. The agent emits events to the backend (`POST /events`) → the backend forwards them to the glasses and the dashboard.
 5. The judge approves → the backend notifies the agent → the agent pays and calls via ElevenLabs.
@@ -139,7 +139,7 @@ POST /demo/reset        resets everything to the initial state
 GET  /flights/search    mock flights
 ```
 
-### Handle It Agent tools
+### Standby Agent tools
 
 - `get_booking(user_id)`
 - `search_flights(origin, dest, deadline, max_price)`
@@ -222,7 +222,7 @@ If Act 1 isn't ready, the demo starts directly at Act 3 with the boarding pass p
 
 ### Person 2 · Fetch agents
 - **First 2 h:** uAgent registered on Agentverse with a REST endpoint that responds to the backend.
-- **Then:** Handle It Agent with Claude and tools, access via ASI:One, Monitor Agent (last).
+- **Then:** Standby Agent with Claude and tools, access via ASI:One, Monitor Agent (last).
 - Confirm the judging rubric at the Fetch table.
 
 ### Person 3 · G2 glasses
@@ -265,7 +265,7 @@ If Act 1 isn't ready, the demo starts directly at Act 3 with the boarding pass p
 - [ ] App tested on a physical G2.
 - [ ] `.ehpk` uploaded and available in Beta.
 - [ ] Tested: phone locked 5 min, permissions denied, double tap to exit.
-- [ ] App name ≤ 20 characters, no "Even" (`Handle It` ✓).
+- [ ] App name ≤ 20 characters, no "Even" (`Standby` ✓).
 
 ### Devpost
 - [ ] Description: what it does, what problem it solves, how it fits each track.

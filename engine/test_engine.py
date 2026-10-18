@@ -60,9 +60,68 @@ def test_policy_denies_over_budget(c):
     assert small["status"] == "approved"  # under the $25 ask limit
 
 
+def test_policy_hostile_cases(c):
+    """SPEC test cases #8 and #9, plus the other ways a spend must be refused."""
+    c.post("/demo/reset")
+    fee = lambda **kw: c.post("/call/approval", json={"reason": "fee", **kw}).json()["status"]
+
+    # 8: over-budget flight is rejected, with the reason in the trace
+    american = next(o for o in c.get("/flights/search").json()["options"] if o["airline"] == "American")
+    assert american["verdict"] == "rejected" and "over" in american["reason"]
+
+    # 9: a small fee goes through silently (no consent asked) and is logged
+    assert fee(amount=20) == "approved"
+    led = c.get("/ledger").json()
+    assert [s["amount"] for s in led["spends"]] == [20] and led["consents"] == []
+
+    # merchant outside the mandate (restaurant, MCC 5812) is denied, logged, and the glasses say why
+    assert fee(amount=10, merchant="Diner", mcc="5812") == "denied"
+    assert c.get("/ledger").json()["denied"][-1]["merchant"] == "Diner"
+    assert c.get("/state").json()["screen"]["lines"][1] == "Merchant not allowed"
+
+    # negative, zero and garbage requests never pass or change the budget
+    assert fee(amount=-100) == "denied"
+    assert fee(amount=0) == "denied"
+    assert fee(amount=10, mcc="abc") == "denied"
+    assert c.get("/ledger").json()["remaining_usd"] == 280
+
+    # expired mandate denies everything
+    c.post("/mandate", json={"expires_hours": -1})
+    assert fee(amount=5) == "denied"
+    assert c.get("/state").json()["screen"]["lines"][1] == "Spending limit expired"
+    c.post("/demo/reset")
+
+
+def test_merchant_payment_request(c):
+    c.post("/demo/reset")
+    charge = lambda amount, mcc="7011": c.post("/merchant/payment-request",
+                                              json={"merchant": "Guesthouse", "amount": amount, "mcc": mcc})
+    # small charge: allowed silently and logged
+    assert charge(10).status_code == 200
+    assert [s["amount"] for s in c.get("/ledger").json()["spends"]] == [10]
+    # over the ask limit with no approval, or outside the mandate: refused and logged
+    assert charge(40).status_code == 403
+    assert charge(10, mcc="5812").status_code == 403
+    assert len(c.get("/ledger").json()["denied"]) == 2
+
+    # an approved booking can be charged exactly once, without counting it twice against the budget
+    c.post("/demo/reset")
+    r = c.post("/tasks", json={}).json()
+    c.post("/approval", json={"approval_id": r["approval_id"], "approved": True})
+    pick = r["pick"]
+    delta = lambda: c.post("/merchant/payment-request",
+                           json={"merchant": pick["airline"], "amount": pick["price_usd"], "mcc": pick["mcc"]})
+    assert delta().status_code == 200
+    assert delta().status_code == 403
+    assert c.get("/ledger").json()["spent_usd"] == pick["price_usd"]
+    c.post("/demo/reset")
+
+
 if __name__ == "__main__":
     with TestClient(app) as client:
         test_glasses_flow(client)
         test_asi1_flow_with_fee_allowance(client)
         test_policy_denies_over_budget(client)
+        test_policy_hostile_cases(client)
+        test_merchant_payment_request(client)
     print("engine ok")
