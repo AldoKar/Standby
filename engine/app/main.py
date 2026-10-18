@@ -429,7 +429,7 @@ class CallOutcome(BaseModel):
     fee_usd: float | None = None
     transcript_url: str | None = None
     verified: bool = False
-    transcript: str | None = None  # "Agent: ...\nClerk: ..."; when present, Gemini checks the outcome
+    transcript: str | None = None  # "Agent: ...\nClerk: ..."; when present, Claude checks the outcome
 
 
 @app.post("/call/completed")
@@ -444,7 +444,7 @@ async def call_completed(o: CallOutcome):
 @app.post("/call/webhook")
 async def call_webhook(request: Request):
     """ElevenLabs post-call webhook. Verifies the HMAC signature, then checks the transcript
-    with Gemini in the background (ElevenLabs only needs a fast 200)."""
+    with Claude in the background (ElevenLabs only needs a fast 200)."""
     raw = await request.body()
     if not call.signature_ok(raw, request.headers.get("elevenlabs-signature"), os.getenv("ELEVENLABS_WEBHOOK_SECRET")):
         raise HTTPException(401, "invalid or missing ElevenLabs signature")

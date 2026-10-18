@@ -2,4 +2,4 @@ fastapi
 uvicorn
 pydantic>=2
 httpx
-google-genai
+anthropic
