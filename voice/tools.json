@@ -1,0 +1,33 @@
+{
+  "tools": [
+    {
+      "type": "webhook",
+      "name": "request_approval",
+      "description": "Ask the traveler to approve an extra cost (a fee or a change) before agreeing to it. Returns an approval_id and a status; if the status is pending, poll check_approval.",
+      "api_schema": {
+        "url": "https://<ENGINE_HOST>/call/approval",
+        "method": "POST",
+        "request_body_schema": {
+          "type": "object",
+          "properties": {
+            "amount": { "type": "number", "description": "Amount in US dollars" },
+            "reason": { "type": "string", "description": "Short reason, e.g. late check-in" }
+          },
+          "required": ["amount", "reason"]
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "check_approval",
+      "description": "Check whether the traveler approved. Status is pending, approved, rejected or denied.",
+      "api_schema": {
+        "url": "https://<ENGINE_HOST>/call/approval/{approval_id}",
+        "method": "GET",
+        "path_params_schema": {
+          "approval_id": { "type": "string", "description": "The approval_id returned by request_approval" }
+        }
+      }
+    }
+  ]
+}

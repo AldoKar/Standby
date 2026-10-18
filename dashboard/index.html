@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handle It dashboard</title>
+<!-- Owner: P4. Served by the engine at GET /. Point it at another engine with ?api=https://host -->
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --ink: #1c1c1a; --quiet: #6b6b66; --line: #e2e2dd; --hud: #43ff7a; --bad: #c0392b; --good: #1e8449; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0 8px 0 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--quiet); margin: 0 0 10px; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; }
+  button:hover { border-color: var(--ink); }
+  #conn { color: var(--quiet); margin-left: auto; }
+  main { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr); gap: 16px; padding: 16px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  .wide { grid-column: 1 / -1; }
+  .hud { background: #000; color: var(--hud); font: 18px/1.5 ui-monospace, Menlo, monospace; border-radius: 8px; padding: 18px; min-height: 120px; }
+  .hud div { min-height: 27px; }
+  .gestures { display: flex; gap: 8px; margin-top: 10px; }
+  .gestures button[disabled] { opacity: .35; cursor: default; }
+  .gesture-hint { color: var(--quiet); font-size: 12px; margin-top: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 3px 0; border-bottom: 1px solid var(--line); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  #feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
+  #feed li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  #feed .t { color: var(--quiet); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  #feed .type { font-weight: 600; margin-right: 8px; }
+  .deny { color: var(--bad); }
+  .allow { color: var(--good); }
+  .label { color: var(--quiet); font-size: 12px; margin-top: 8px; }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Handle It</h1>
+  <button id="simulate">Simulate cancellation</button>
+  <button id="reset">Reset</button>
+  <span id="conn">connecting…</span>
+</header>
+<main>
+  <section>
+    <h2>Glasses (HUD mirror)</h2>
+    <div class="hud" id="hud"><div></div><div></div><div></div></div>
+    <div class="gestures">
+      <button data-g="press">Press</button>
+      <button data-g="hold">Hold</button>
+      <button data-g="swipe_down">Swipe down</button>
+    </div>
+    <div class="gesture-hint" id="hint"></div>
+  </section>
+  <section>
+    <h2>Mandate ledger</h2>
+    <table id="ledger"></table>
+    <div class="label" id="mandate"></div>
+  </section>
+  <section class="wide">
+    <h2>Activity and policy trace</h2>
+    <ol id="feed"></ol>
+  </section>
+</main>
+<script>
+const API = new URLSearchParams(location.search).get('api') || '';
+const $ = (id) => document.getElementById(id);
+const post = (path, body) => fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+let clearTimer;
+
+function renderScreen(s) {
+  clearTimeout(clearTimer);
+  const rows = $('hud').children;
+  for (let i = 0; i < 3; i++) rows[i].textContent = s.lines[i] || '';
+  const g = s.gestures || {};
+  document.querySelectorAll('.gestures button').forEach((b) => { b.disabled = !g[b.dataset.g]; });
+  $('hint').textContent = Object.entries(g).map(([k, v]) => `${k.replace('_', ' ')} = ${v}`).join(' · ');
+  if (s.clear_after_s) clearTimer = setTimeout(() => renderScreen({ lines: [], gestures: g }), s.clear_after_s * 1000);
+}
+
+function summary(e) {
+  const d = e.data || {};
+  switch (e.type) {
+    case 'options.ranked': return d.options.map((o) => `${o.airline} $${o.price_usd}: ${o.verdict} (${o.reason})`).join(' · ');
+    case 'mandate.checked': return `<span class="${d.result === 'deny' ? 'deny' : 'allow'}">${d.result}</span> $${d.amount}: ${d.reason}`;
+    case 'payment.executed': return `$${d.amount} to ${d.merchant} · token ${d.token_id} · ${d.reference}`;
+    case 'hud.screen': return d.lines.join(' / ') || '(blank)';
+    case 'call.completed': return JSON.stringify(d.outcome);
+    default: return Object.keys(d).length ? JSON.stringify(d) : '';
+  }
+}
+
+function addFeed(e) {
+  if (e.type === 'state.snapshot') return;
+  const li = document.createElement('li');
+  const t = new Date(e.ts).toLocaleTimeString();
+  li.innerHTML = `<span class="t">${t}</span><span class="type">${e.type}</span>${summary(e)}`;
+  $('feed').prepend(li);
+}
+
+async function refreshLedger() {
+  const l = await (await fetch(API + '/ledger')).json();
+  const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+  $('ledger').innerHTML =
+    row('Budget', `$${l.mandate.budget_usd}`) +
+    l.spends.map((s) => row(`${s.merchant} (${s.kind})`, `$${s.amount}`)).join('') +
+    l.refunds.map((r) => row(`${r.airline} refund, ${r.status}`, `−$${r.amount}`)).join('') +
+    row('Spent', `$${l.spent_usd}`) + row('Left', `$${l.remaining_usd}`) + row('Net cost', `$${l.net_cost_usd}`) +
+    row('Consent records', l.consents.length) +
+    l.denied.map((d) => row(`<span class="deny">Denied: ${d.merchant}</span>`, `$${d.amount}`)).join('');
+  $('mandate').textContent = `"${l.mandate.instruction}" · ${l.mandate.label}`;
+}
+
+function connect() {
+  const es = new EventSource(API + '/events');
+  es.onopen = () => { $('conn').textContent = 'live'; };
+  es.onerror = () => { $('conn').textContent = 'reconnecting…'; };
+  es.onmessage = (msg) => {
+    const e = JSON.parse(msg.data);
+    if (e.type === 'hud.screen') renderScreen(e.data);
+    if (e.type === 'demo.reset') $('feed').innerHTML = '';
+    addFeed(e);
+    if (['state.snapshot', 'payment.executed', 'mandate.checked', 'offer.declined', 'approval.granted', 'approval.rejected', 'demo.reset'].includes(e.type)) refreshLedger();
+  };
+}
+
+document.querySelectorAll('.gestures button').forEach((b) => b.addEventListener('click', () => post('/input', { gesture: b.dataset.g })));
+$('simulate').addEventListener('click', () => post('/simulate/cancel'));
+$('reset').addEventListener('click', () => post('/demo/reset'));
+connect();
+</script>
+</body>
+</html>
