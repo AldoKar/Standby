@@ -34,10 +34,10 @@ Built at the **LA Hacks AI Hackathon 2026** (Oct 17–18).
 | Step | On the glasses | What the agent does |
 |---|---|---|
 | Before the trip | `Ready / Tap = start, Hold = ask` | Your flight is a real LAX→SFO flight from FlightAware. Hold and ask anything, in any language: "Is my flight on time?" |
-| Cancelled | `UA183 cancelled / Fix it for up to $300? / Tap = yes, Swipe = no` | Claude checks the flight, searches tonight's flights, picks one and proposes a spending limit from the real fares, with its reasoning |
+| Cancelled | `UA183 cancelled / Fix it for up to $300? / Tap = yes, Hold = budget, Swipe = no` | Claude checks the flight, searches tonight's flights, picks one and proposes a spending limit from the real fares, with its reasoning |
 | Choose | `→ Delta 9:15 PM $215` · `Alaska 9:45 PM $239` · `WN2210 10:00 PM $229` | Up to three flights that fit the limit. Swipe to move, tap twice to book. Policy re-checks the spend; the payment is signed |
 | Call | `Desk closes 11:00 PM / You land 10:40 / Calling guesthouse` | Claude sees you'll arrive after the desk closes and decides to call. An ElevenLabs voice agent phones the guesthouse |
-| Mid-call fee | `+$40 late check-in / Hold = OK, Swipe = no` | The clerk asks for a fee; you approve it on the glasses while the call is live |
+| Mid-call fee | `+$40 late check-in / Hold = OK, Swipe = no` | The clerk asks for a fee; you approve it on the glasses while the call is live. Every fee is asked, whatever the amount |
 | Outcome | `Room held / Door code 4417` | Claude reads the transcript; the door code is shown only if the clerk really said it |
 | Money back | `Trip claim ready / $66 back expected / Tap = submit` | Claude drafts a travel-benefit claim from your receipts ($215 − $189 airline refund + $40 fee); code checks every dollar. Net cost of the cancellation: $0 |
 
@@ -127,19 +127,12 @@ The deployed engine runs on Vultr behind Caddy (HTTPS, systemd): [`engine/DEPLOY
 
 ## Install and run on G2
 
-**Even Hub app name:** `Standby` (Beta build).
-
-1. Install the Even Realities app on your phone, sign in and pair your G2.
-2. Install the **Standby** Beta build from Even Hub and open it on the glasses.
-3. It connects to the hosted engine; no keys are needed to test. Tap to start the demo.
-
-**Gestures:** tap = start / yes / book (approvals ask "Are you sure?", tap again) · long press = ask a question by voice (on Ready) or approve directly · swipe down = next flight / no.
-
-To sideload a dev build or point it at another engine (`?api=https://host` or `VITE_ENGINE_URL`), see [`g2-app/README.md`](g2-app/README.md).
+How to install Standby on the G2, what it does on the glasses and how it works: [`g2-app/README.md`](g2-app/README.md).
+No API keys are needed to test it.
 
 ## Configuration
 
-All keys are optional; without them the engine runs the full flow on mock data. Copy [`engine/.env.example`](engine/.env.example) to `engine/.env` (never commit it).
+All keys are optional; without them the engine runs the full flow on mock data. **Testers using the hosted engine need none of these.** Copy [`engine/.env.example`](engine/.env.example) to `engine/.env` (never commit it).
 
 | Variable | What it turns on |
 |---|---|
@@ -149,12 +142,13 @@ All keys are optional; without them the engine runs the full flow on mock data. 
 | `FLIGHTS_MODE=duffel`, `DUFFEL_TOKEN` | Live flight search and test-mode orders (`mock` = demo fares) |
 | `CALL_MODE=elevenlabs`, `ELEVENLABS_*`, `CALL_TO_NUMBER` | A real outbound phone call (`mock` = simulated clerk) |
 | `OPENROUTER_API_KEY` | Voice commands on the glasses (speech to text and intent) |
+| `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_API_KEY` | Picking a flight by voice ("the Alaska one"); local Ollama, or Ollama Cloud with `OLLAMA_URL=https://ollama.com` and a key. Without it a keyword match is used |
 | `PUBLIC_URL`, `TAP_PRIVATE_KEY` | The signing key directory URL and a stable signing key |
 
 ## Tests
 
 ```bash
-cd engine && python test_engine.py      # 21 end-to-end cases, no network, no cost
+cd engine && python test_engine.py      # 23 end-to-end cases, no network, no cost
 cd engine && python -m app.claims       # claim rules self-check
 cd agents && python test_agents.py      # the orchestrator against a running engine
 cd g2-app && npm run build              # type-check and build the glasses app
@@ -164,8 +158,8 @@ The engine suite stubs Claude, Duffel, FlightAware and ElevenLabs, and covers th
 
 ## Trust and safety
 
-- **Code decides money, never the model.** Every spend goes through `engine/app/policy.py` (budget, ask-over limit, merchant categories, expiry). Claude can propose a limit or a claim; code rounds, caps and checks it, and refuses anything else.
-- **Consent at the moment it matters.** One tap for the limit, one per flight and fee over $25. Voice can never approve a spend: it asks for a tap.
+- **Code decides money, never the model.** Every spend goes through `engine/app/policy.py` (budget, merchant categories, expiry), which can only deny or ask: nothing is paid without the traveler's OK. Claude can propose a limit or a claim; code rounds, caps and checks it, and refuses anything else.
+- **Consent at the moment it matters.** One tap for the limit, one for every flight and every fee, whatever the amount. Voice can never approve a spend: it asks for a tap.
 - **Signed payments.** Each merchant request is signed (RFC 9421, Ed25519, `agent-payer-auth`), modeled on Visa's Trusted Agent Protocol; the public key is at `/.well-known/http-message-signatures-directory`. Tampering and replays are refused.
 - **Verified outcomes.** A door code reaches the glasses only if Claude marks the call verified and the code literally appears in the transcript.
 - **Disclosed calls.** The voice agent says it's an AI assistant, and never reads out card details.
