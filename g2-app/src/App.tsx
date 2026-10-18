@@ -14,7 +14,7 @@ import { publish, subscribe } from './events/bus'
 import { emitInput, initGlasses, onGlassesInput, type BridgeStatus, type GlassesInput } from './glasses/bridge'
 import { currentPagePlan, currentScreen, showScreen, subscribeHud } from './hud/controller'
 import { presentEngineScreen } from './hud/callView'
-import { handleGesture } from './hud/gestures'
+import { handleGesture, handleListSelect } from './hud/gestures'
 import { planScreen } from './hud/layout'
 import { fromEngine, idleScreen, offlineScreen, type HudScreen } from './hud/screens'
 import { Insights } from './insights/Insights'
@@ -177,6 +177,10 @@ function App() {
       }
       if (input === 'tap' && performance.now() - lastDoubleTap < DOUBLE_TAP_ECHO_MS) {
         log('tap ignored: echo of a double tap')
+        return
+      }
+      if (input === 'list_select') {
+        handleListSelect(engine) // the native list's selection moved: the engine follows it
         return
       }
       const gesture = GESTURE_FOR[input]

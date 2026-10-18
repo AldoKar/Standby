@@ -88,6 +88,26 @@ export function HudMirror({ screen, plan, status, engineStatus, onInput }: Props
             {t.content}
           </div>
         ))}
+        {(plan.lists ?? []).map((l) => (
+          // Native list replica: the glasses draw a box around the selected item (here: the engine's row).
+          <div
+            key={l.id}
+            className={`lens-box lens-list${l.border ? ' lens-border' : ''}`}
+            style={{
+              ...box(l.x, l.y, l.w, l.h),
+              zIndex: l.z,
+              borderColor: l.borderLevel !== undefined ? `rgba(61, 255, 110, ${l.borderLevel / 15})` : undefined,
+              padding: `calc(100cqw * ${l.padding ?? PADDING} / ${LENS_W})`,
+              borderRadius: l.border ? `calc(100cqw * ${l.radius ?? 10} / ${LENS_W})` : undefined,
+            }}
+          >
+            {l.items.map((item, k) => (
+              <div key={k} className={`lens-list-item${k === l.selected ? ' selected' : ''}`}>
+                {item}
+              </div>
+            ))}
+          </div>
+        ))}
         {plan.images.map((i) => (
           <img
             key={i.id}

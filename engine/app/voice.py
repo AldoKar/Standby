@@ -37,7 +37,9 @@ MAX_AUDIO_BYTES = 1_500_000  # ~45 s of 16 kHz mono WAV; voice commands are a fe
 INTENTS: dict[str, dict[str, str]] = {
     "cancelled": {"fix": "press", "reject": "swipe_down"},  # yes / no to the proposed spending limit
     "declined": {"fix": "press"},
-    "flight_list": {"approve": "hold", "other_option": "swipe_down"},  # book the highlighted one / next
+    # The glasses' native list owns the selection, so voice only books the highlighted row (after a tap);
+    # "another one" would move the engine's highlight under a list it can't move. Scroll instead.
+    "flight_list": {"approve": "hold"},
     "booking_offer": {"approve": "hold", "other_option": "swipe_down"},
     "only_option": {"approve": "hold"},
     "fee_request": {"approve": "hold", "reject": "swipe_down"},

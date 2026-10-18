@@ -124,7 +124,7 @@ function beginAsk(engine: Engine) {
   clearAskTimer()
   if (!askMic) {
     log('ask: no glasses mic here; type the question in the voice tester')
-    askFailed(of, 'Mic not connected')
+    askFailed(of, 'Mic off · type it on the page')
     return
   }
   askEngine = engine
@@ -190,10 +190,23 @@ export function sayText(engine: Engine, text: string): void {
 
 // ---------- the mic ----------
 
+/**
+ * Real glasses always run inside the Even app on a phone. On a desktop (the simulator) "the glasses mic"
+ * is the laptop's, which hears the whole room: never open it there. `?mic=on` forces it for testing.
+ */
+export function micAllowed(): boolean {
+  if (new URLSearchParams(location.search).get('mic') === 'on') return true
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
 /** Start listening on the glasses mic. Call once the bridge is connected. Returns a stop function. */
 export function startVoice(engine: Engine): () => void {
   if (!canUseMic()) {
     log('voice: no glasses bridge, mic disabled (typed commands still work)')
+    return () => {}
+  }
+  if (!micAllowed()) {
+    log('voice: desktop (simulator), the laptop mic stays off; type commands in the voice tester (?mic=on forces it)')
     return () => {}
   }
   let wantMic = false
