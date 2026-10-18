@@ -529,9 +529,16 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
         a = pending_approval(snap)
         pick = snap.get("pick") or {}
         stage = snap.get("stage")
+        # `pick` is only the engine's recommendation. It becomes a booking when the
+        # traveller approves it — reporting it as booked before that would have the agent
+        # claim a flight the traveller declined.
+        booked = any(a.get("kind") == "booking" and a.get("status") == "approved"
+                     for a in (snap.get("approvals") or []))
+        flight = f"{pick.get('airline')} {pick.get('flight')}" if pick else None
         return {
             "stage": stage,
-            "booked_flight": f"{pick.get('airline')} {pick.get('flight')}" if pick else None,
+            "booked_flight": flight if booked else None,
+            "recommended_flight": None if booked else flight,
             "waiting_on_traveller": {"amount_usd": a["amount"], "reason": a["reason"]} if a else None,
             # The engine keeps the last outcome across tasks; only report it once this
             # task has actually resolved, so a stale door code never looks current.

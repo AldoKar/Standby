@@ -71,6 +71,15 @@ before ASI:One can reach it. Run both agents on the Vultr box under systemd for 
 
 Reset between runs with `curl -X POST localhost:8000/demo/reset`.
 
+## Tests
+
+```bash
+cd agents && python test_agents.py          # tool layer, guardrails, cards — no LLM calls
+cd agents && python test_agents.py --live   # also drives Claude end to end
+```
+
+Needs the engine running. Run it before opening a PR, like `engine/test_engine.py`.
+
 ## How it works
 
 ASI:One → Chat Protocol → orchestrator → REST → engine.
