@@ -2,7 +2,7 @@
 // Single source of truth for BOTH the real glasses (bridge.ts) and the browser mirror (HudMirror.tsx).
 //
 // Budget: max 12 containers, 8 text, 4 image. Worst case here is 5 text + 2 image
-// (frame, header, main, detail, footer/hint + icon, bar).
+// (margin or alert frame, header, main, detail, footer/hint + icon, bar).
 // Choices render as ONE native hint line ("Tap = book  ·  Swipe ↓ = other"), left-aligned like Even's own
 // apps, instead of fake buttons: no centring to fake, one read, and the page structure doesn't change between
 // screens, so most transitions are cheap textContainerUpgrade calls instead of full rebuilds.
@@ -27,6 +27,7 @@ export type TextSpec = {
   color: number // brightness 0..4
   content: string
   border?: boolean
+  borderLevel?: number // border brightness 0..15 (default: bridge BORDER_COLOR)
   radius?: number
   padding?: number
   capture?: boolean
@@ -52,10 +53,31 @@ export function hintText(choices: HudChoice[]): string {
   return choices.map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`).join('  ·  ')
 }
 
+// App margin: a thin, low-brightness outline around the whole app area, so the wearer always knows where
+// Standby's space ends and the world begins. Not on alerts (their bright card stands alone) and not on a
+// blank lens (quiet by default). Fixed geometry: it never forces a page rebuild between normal screens.
+const MARGIN = { x: 4, y: 4, w: LENS_W - 8, h: LENS_H - 8, level: 5, radius: 12 }
+
 export function planScreen(s: HudScreen): PagePlan {
   const texts: TextSpec[] = []
+  const blank = s.lines.length === 0
   if (s.alert) {
     texts.push({ id: 1, name: 'frame', x: 12, y: 80, w: 552, h: 110, color: DIM, content: BLANK, border: true, z: 1 })
+  } else if (!blank) {
+    texts.push({
+      id: 1,
+      name: 'margin',
+      x: MARGIN.x,
+      y: MARGIN.y,
+      w: MARGIN.w,
+      h: MARGIN.h,
+      color: DIM,
+      content: BLANK,
+      border: true,
+      borderLevel: MARGIN.level,
+      radius: MARGIN.radius,
+      z: 1, // behind everything
+    })
   }
   const hasHint = Boolean(s.choices?.length)
   texts.push(
@@ -105,5 +127,6 @@ export function planScreen(s: HudScreen): PagePlan {
     images.push({ id: 7, name: 'bar', x: 92, y: 166, w: 288, h: 24, key: 'bar:wave:0', z: 7 })
   }
 
-  return { signature: `${s.alert ? 'alert' : 'plain'}${s.bar ? '+bar' : ''}`, texts, images }
+  const kind = s.alert ? 'alert' : blank ? 'blank' : 'plain'
+  return { signature: `${kind}${s.bar ? '+bar' : ''}`, texts, images }
 }

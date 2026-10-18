@@ -125,7 +125,7 @@ function pageModel(plan: PagePlan) {
           height: t.h,
           paddingLength: t.padding ?? PADDING,
           borderWidth: t.border ? 2 : 0,
-          borderColor: t.border ? BORDER_COLOR : 0,
+          borderColor: t.border ? (t.borderLevel ?? BORDER_COLOR) : 0,
           borderRadius: t.border ? (t.radius ?? 10) : 0,
           containerID: t.id,
           containerName: t.name,
