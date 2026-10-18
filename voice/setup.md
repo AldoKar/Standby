@@ -55,7 +55,7 @@ Names are case-sensitive and must match exactly, or the agent reads `{{eta}}` ou
 | Identifier | Type | Description |
 |---|---|---|
 | `held` | boolean | True only if the clerk agreed to hold the room tonight |
-| `door_code` | string | The door or key-box code exactly as the clerk said it; empty if none or taken back |
+| `door_code` | string | The door or key-box code as digits only, e.g. 4417; empty if none or taken back |
 | `contact` | string | First name of the person the guest should ask for |
 | `fee_usd` | number | Extra fee agreed on the call in US dollars, 0 if none |
 

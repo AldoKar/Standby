@@ -19,7 +19,7 @@
             },
             "reason": {
               "type": "string",
-              "description": "Short reason, e.g. late check-in"
+              "description": "2 to 3 words for the traveler's glasses, e.g. 'late check-in'. No names, numbers or times."
             }
           },
           "required": [
