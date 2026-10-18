@@ -39,6 +39,7 @@ INTENTS: dict[str, dict[str, str]] = {
     "booking_offer": {"approve": "hold", "other_option": "swipe_down"},
     "only_option": {"approve": "hold"},
     "fee_request": {"approve": "hold", "reject": "swipe_down"},
+    "claim_ready": {"approve": "press", "reject": "swipe_down"},  # submit the trip claim, or keep it for later
 }
 
 # Intents that approve a spend: never applied by voice, the wearer confirms with a tap.

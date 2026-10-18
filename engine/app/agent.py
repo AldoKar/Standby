@@ -4,6 +4,7 @@ Short tool-use loops, one per phase:
 - plan: after the cancellation, check the flight, search flights, choose one.
 - arrival: after the booking, check the arrival against the lodging and decide whether to call.
 - ask: answer a free question (flight status, vault, spending). Read-only tools only.
+- claim: after the trip is handled, claim back what the traveler's travel benefits cover (claims.py checks it).
 
 Code keeps the last word on money and safety: choose_flight refuses options policy.py rejected,
 every spend still goes through policy.check_spend and the wearer approves on the glasses.
@@ -108,12 +109,40 @@ PHASES["ask"] = {
         READ_VAULT, FLIGHT_STATUS,
         {"name": "read_ledger", "description": "Money: budget, spent, remaining, refunds pending, every payment.",
          "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
-        {"name": "read_task", "description": "What the agent is doing now: stage, chosen flight, call outcome.",
+        {"name": "read_task", "description": "What the agent is doing now: stage, chosen flight, call outcome, "
+                                             "and the travel-benefit claim (amount, status).",
          "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     ],
     "schema": {"type": "object", "properties": {
         "answer": {"type": "string"}, "glasses": {"type": "array", "items": {"type": "string"}}},
         "required": ["answer", "glasses"], "additionalProperties": False},
+}
+
+PHASES["claim"] = {
+    "goal": "The trip is handled. Get the traveler's money back: read their travel benefits in the Vault and "
+            "every payment in the ledger, then prepare one claim with file_claim for what the benefits cover. "
+            "Cite each payment by its reference, under the benefit that covers it, for the amount the terms allow. "
+            "Never claim money the airline already refunds. If file_claim refuses an item, fix it and file again. "
+            "'letter' is the claim to the benefits administrator: short and factual (what happened, each expense, "
+            "the total, and that each receipt is referenced by its payment reference). Nothing is sent until the traveler taps to submit.",
+    "tools": [
+        READ_VAULT,
+        {"name": "read_ledger", "description": "Every payment (reference, merchant, amount, category), refunds "
+                                               "pending from the airline, and the spending mandate.",
+         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+        {"name": "file_claim",
+         "description": "Prepare the claim for the traveler to submit. Code checks every item against the benefit "
+                        "terms and refuses the whole claim if any item is wrong, saying why.",
+         "input_schema": {"type": "object", "properties": {
+             "items": {"type": "array", "items": {"type": "object", "properties": {
+                 "reference": {"type": "string", "description": "Payment reference from the ledger"},
+                 "benefit_id": {"type": "string"},
+                 "amount_usd": {"type": "number"},
+                 "reason": {"type": "string", "description": "One sentence: why this benefit covers it"}},
+                 "required": ["reference", "benefit_id", "amount_usd", "reason"], "additionalProperties": False}},
+             "letter": {"type": "string"}},
+             "required": ["items", "letter"], "additionalProperties": False}},
+    ],
 }
 
 Tool = Callable[[dict], Awaitable[dict]]

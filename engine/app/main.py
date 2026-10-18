@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, call, flights, policy, status, tap, verify, voice
+from . import agent, call, claims, flights, policy, status, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +34,8 @@ CALL_MODE = os.getenv("CALL_MODE", "mock")  # mock | elevenlabs
 HEARTBEAT_S = 15
 MOCK_CLERK_DELAY_S = float(os.getenv("MOCK_CLERK_DELAY_S", "4"))  # clerk asks for the fee
 MOCK_CALL_END_S = float(os.getenv("MOCK_CALL_END_S", "2"))  # call wraps up after the answer
+CLAIM_DELAY_S = float(os.getenv("CLAIM_DELAY_S", "6"))  # the outcome stays on the glasses before the claim
+BENEFITS = MOCK["travel_benefits"]
 
 # Free mode: the traveler's own flight is a real one (FlightAware), so questions about it get live answers;
 # Start then "cancels" that same flight and the usual flow runs. auto = next real LAX->SFO nonstop
@@ -76,6 +78,7 @@ class State:
         self.agent_log: list[dict] = []  # what Claude did this task: thoughts, tool calls, results
         self.call_started = False
         self.before_answer: dict | None = None  # the screen an /ask answer covered
+        self.claim: dict | None = None  # the travel-benefit claim for this trip (claims.py)
 
 
 def booking() -> dict:
@@ -94,6 +97,8 @@ def seed_vault() -> list[dict]:
          "saved_at": None, "source": "traveler",
          "data": {"name": lodging["name"], "confirmation": lodging["confirmation"],
                   "desk_closes": lodging["desk_closes"], "note": lodging["note"]}},
+        {"id": "vlt-benefits", "type": "travel_benefits", "title": BENEFITS["program"],
+         "saved_at": None, "source": "traveler", "data": BENEFITS},
     ]
 
 
@@ -203,6 +208,7 @@ def snapshot() -> dict:
         "ledger": S.ledger.view(S.mandate),
         "vault": S.vault,
         "agent": S.agent_log,
+        "claim": S.claim,
         "call_mode": CALL_MODE,
         "trip": {**booking(), "live": bool(booking().get("live")), "error": TRIP["error"]},
     }
@@ -481,6 +487,7 @@ async def after_booking() -> None:
             S.stage = "resolved"
             await publish("task.resolved", {"flight": p["flight"], "lodging": None})
             await show("resolved", ["All set", "No call needed"], {"press": "dismiss"}, 10)
+            run_later(prepare_claim(S.task_id))
         return
     if not S.call_started:
         await call_lodging()
@@ -537,6 +544,7 @@ async def call_failed(reason: str) -> None:
     await publish("call.completed", {"outcome": S.outcome, "transcript_url": None, "verified": False})
     S.stage = "resolved"
     await show("call_failed", ["Call didn't connect", "Details on your phone"], {"press": "dismiss"}, 10)
+    run_later(prepare_claim(S.task_id))
 
 
 async def request_fee(amount: float, reason: str, merchant: str | None = None, mcc: str | None = None) -> dict:
@@ -579,6 +587,75 @@ async def finish_call(outcome: dict, transcript_url: str | None, transcript: str
     else:
         screen_id, lines = "not_held", ["Room not held", "Details on your phone"]
     await show(screen_id, lines, {"press": "dismiss"}, 10)
+    run_later(prepare_claim(S.task_id))
+
+
+# ---------- travel-benefit claim ----------
+
+async def prepare_claim(task_id: str | None) -> None:
+    """After the trip is handled, get the traveler's money back: Claude drafts the claim from the benefits
+    and receipts, claims.py checks every amount, and the wearer taps to submit. Scripted if Claude is off."""
+    if S.claim or not S.ledger.spends:  # already done, or nothing paid
+        return
+    shown_at = asyncio.get_running_loop().time() + CLAIM_DELAY_S  # Claude drafts while the outcome is shown
+    filed: dict = {}
+
+    async def read_ledger(_: dict) -> dict:
+        return S.ledger.view(S.mandate)
+
+    async def file_claim(i: dict) -> dict:
+        items, problems = claims.validate(i.get("items", []), S.ledger, BENEFITS)
+        if problems:
+            return {"refused": problems}
+        filed.update(items=items, letter=str(i.get("letter", ""))[:3000])
+        return {"claim_ready": round(sum(x["amount_usd"] for x in items), 2),
+                "next": "the traveler submits it with a tap"}
+
+    drafted_by = "script"
+    if agent.enabled() and await run_agent("claim", {"traveler": MOCK["traveler"]["name"],
+                                                     "benefits_program": BENEFITS["program"]},
+                                           {"read_vault": read_vault, "read_ledger": read_ledger,
+                                            "file_claim": file_claim}) and filed:
+        drafted_by = "agent"
+    if S.task_id != task_id:
+        return
+    if not filed:
+        items, problems = claims.validate(claims.draft(S.ledger, BENEFITS), S.ledger, BENEFITS)
+        if problems:
+            return  # nothing the benefits cover
+        filed.update(items=items, letter=claim_letter(items))
+    await asyncio.sleep(max(0.0, shown_at - asyncio.get_running_loop().time()))
+    if S.task_id != task_id or S.claim:  # dismissed meanwhile
+        return
+    total = round(sum(x["amount_usd"] for x in filed["items"]), 2)
+    S.claim = {"claim_id": f"clm-{uuid.uuid4().hex[:8]}", "task_id": task_id, "status": "ready",
+               "program": BENEFITS["program"], "label": BENEFITS["label"], "token_id": BENEFITS["token_id"],
+               "items": filed["items"], "total_usd": total, "letter": filed["letter"], "drafted_by": drafted_by,
+               "ts": now()}
+    await save_to_vault("trip_claim", f"Trip claim: ${total:g}", S.claim)
+    await publish("claim.ready", {k: S.claim[k] for k in ("claim_id", "total_usd", "items", "drafted_by", "program")})
+    await show("claim_ready", ["Trip claim ready", f"${total:g} back expected", "Tap = submit"],
+               {"press": "submit", "swipe_down": "later"})
+
+
+def claim_letter(items: list[dict]) -> str:
+    b = booking()
+    lines = [f"Claim for {MOCK['traveler']['name']}: {b['airline']} {b['flight']} {b['from']}-{b['to']} on "
+             f"{b['date']} was cancelled by the carrier."]
+    lines += [f"- {i['benefit']}: ${i['amount_usd']:g} ({i['rule']}; receipt {i['reference']})" for i in items]
+    lines.append(f"Total claimed: ${sum(i['amount_usd'] for i in items):g}. Receipts referenced above (signed payments).")
+    return "\n".join(lines)
+
+
+async def submit_claim(via: str) -> None:
+    """The wearer tapped to submit. ponytail: simulated submission; a real one posts to the issuer's claims API."""
+    c = S.claim
+    c.update(status="submitted", submitted_at=now(), submitted_via=via)
+    S.ledger.claims.append({"claim_id": c["claim_id"], "total_usd": c["total_usd"], "status": "submitted",
+                            "program": c["program"], "ts": c["submitted_at"]})
+    await publish("claim.submitted", {"claim_id": c["claim_id"], "total_usd": c["total_usd"], "via": via})
+    await show("claim_submitted", ["Claim submitted", f"${c['total_usd']:g} expected back", "Details on phone"],
+               {"press": "dismiss"}, 10)
 
 
 # ---------- SSE ----------
@@ -637,6 +714,11 @@ async def input_(g: Gesture):
         return {"handled": False, "stage": stage, "reason": f"stale screen: {g.screen_id}, now {S.screen['screen_id']}"}
     if gesture == "press" and S.screen["screen_id"] == "answer":
         await restore_screen(S.before_answer)
+    elif S.screen["screen_id"] == "claim_ready" and gesture in ("press", "swipe_down"):
+        if gesture == "press":
+            await submit_claim("glasses")
+        else:  # later: it stays ready in the Vault, submit from the phone
+            await show("resolved", ["Claim saved", "Submit from phone"], {"press": "dismiss"}, 10)
     elif gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
     elif gesture == "press" and stage == "resolved":
@@ -702,6 +784,7 @@ async def ask(q: Ask):
 
     async def read_task(_: dict) -> dict:
         return {"stage": S.stage, "task_id": S.task_id, "pick": S.pick and brief(S.pick), "outcome": S.outcome,
+                "trip_claim": S.claim and {k: S.claim[k] for k in ("status", "total_usd", "items", "program")},
                 "glasses_show": S.screen["lines"]}
 
     first = len(S.agent_log)

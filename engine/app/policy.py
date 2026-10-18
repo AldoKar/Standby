@@ -9,6 +9,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 
+def mcc_in(rules: list[str], mcc: str) -> bool:
+    """True if a merchant category code matches one of the rules ("7011" or a range "3000-3299")."""
+    if not str(mcc).isdigit():
+        return False
+    code = int(mcc)
+    for rule in rules:
+        if "-" in rule:
+            lo, hi = (int(x) for x in rule.split("-"))
+            if lo <= code <= hi:
+                return True
+        elif code == int(rule):
+            return True
+    return False
+
+
 @dataclass
 class Mandate:
     instruction: str
@@ -30,17 +45,7 @@ class Mandate:
         )
 
     def allows_mcc(self, mcc: str) -> bool:
-        if not str(mcc).isdigit():
-            return False
-        code = int(mcc)
-        for rule in self.allowed_mcc:
-            if "-" in rule:
-                lo, hi = (int(x) for x in rule.split("-"))
-                if lo <= code <= hi:
-                    return True
-            elif code == int(rule):
-                return True
-        return False
+        return mcc_in(self.allowed_mcc, mcc)
 
     def as_dict(self) -> dict:
         return {
@@ -60,6 +65,7 @@ class Ledger:
     refunds: list[dict] = field(default_factory=list)
     consents: list[dict] = field(default_factory=list)
     denied: list[dict] = field(default_factory=list)
+    claims: list[dict] = field(default_factory=list)  # travel-benefit claims submitted (claims.py)
 
     def spent(self) -> float:
         return round(sum(s["amount"] for s in self.spends), 2)
@@ -69,16 +75,20 @@ class Ledger:
 
     def view(self, m: Mandate) -> dict:
         refunded = round(sum(r["amount"] for r in self.refunds), 2)
+        claimed = round(sum(c["total_usd"] for c in self.claims), 2)
         return {
             "mandate": m.as_dict(),
             "spent_usd": self.spent(),
             "remaining_usd": self.remaining(m),
             "refunds_pending_usd": refunded,
             "net_cost_usd": round(self.spent() - refunded, 2),
+            "claims_expected_usd": claimed,
+            "net_after_claims_usd": round(self.spent() - refunded - claimed, 2),
             "spends": self.spends,
             "refunds": self.refunds,
             "consents": self.consents,
             "denied": self.denied,
+            "claims": self.claims,
         }
 
 
