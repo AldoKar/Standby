@@ -1,9 +1,12 @@
 {
+  "_comment": "Each entry is an ElevenLabs webhook tool_config (POST /v1/convai/tools takes {\"tool_config\": <entry>}). Replace <ENGINE_HOST> with the engine's public HTTPS host. Setup steps: voice/setup.md.",
   "tools": [
     {
       "type": "webhook",
       "name": "request_approval",
-      "description": "Ask the traveler to approve an extra cost (a fee or a change) before agreeing to it. Returns an approval_id and a status; if the status is pending, poll check_approval.",
+      "description": "Ask the traveler to approve an extra cost (a fee or a change) before agreeing to it. Returns an approval_id and a status; if the status is pending, call check_approval with that approval_id.",
+      "response_timeout_secs": 10,
+      "pre_tool_speech": "force",
       "api_schema": {
         "url": "https://<ENGINE_HOST>/call/approval",
         "method": "POST",
@@ -20,12 +23,39 @@
     {
       "type": "webhook",
       "name": "check_approval",
-      "description": "Check whether the traveler approved. Status is pending, approved, rejected or denied.",
+      "description": "Check whether the traveler approved. Each check waits several seconds for an answer. Status is pending, approved, rejected or denied.",
+      "response_timeout_secs": 15,
+      "tool_call_sound": "typing",
       "api_schema": {
         "url": "https://<ENGINE_HOST>/call/approval/{approval_id}",
         "method": "GET",
         "path_params_schema": {
           "approval_id": { "type": "string", "description": "The approval_id returned by request_approval" }
+        },
+        "query_params_schema": {
+          "properties": {
+            "wait_s": { "type": "integer", "constant_value": 8 }
+          }
+        }
+      }
+    },
+    {
+      "type": "webhook",
+      "name": "report_outcome",
+      "description": "Call exactly once, right before ending the call, after repeating back what was agreed. Report only what the clerk actually said. Leave door_code out if the clerk did not give one or took it back.",
+      "response_timeout_secs": 10,
+      "api_schema": {
+        "url": "https://<ENGINE_HOST>/call/completed",
+        "method": "POST",
+        "request_body_schema": {
+          "type": "object",
+          "properties": {
+            "held": { "type": "boolean", "description": "True only if the clerk agreed to hold the room tonight" },
+            "fee_usd": { "type": "number", "description": "Extra fee agreed on the call in US dollars, 0 if none" },
+            "door_code": { "type": "string", "description": "Door or key-box code exactly as the clerk said it" },
+            "contact": { "type": "string", "description": "First name of the person the guest should ask for" }
+          },
+          "required": ["held"]
         }
       }
     }
