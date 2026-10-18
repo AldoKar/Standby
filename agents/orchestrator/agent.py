@@ -2,8 +2,8 @@ import os
 from datetime import datetime
 from uuid import uuid4
 
+from anthropic import Anthropic
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv()
 from uagents import Context, Protocol, Agent
@@ -24,20 +24,16 @@ from uagents_core.contrib.protocols.chat import (
 ## a more complete agentic system.
 ##
  
-# the subject that this assistant is an expert in
-subject_matter = "the sun"
- 
-client = OpenAI(
-    # By default, we are using the ASI:One LLM endpoint and model
-    base_url='https://api.asi1.ai/v1',
- 
-    # You can get an ASI:One api key by creating an account at https://asi1.ai/dashboard/api-keys
-    api_key=os.getenv("ASI_ONE_API_KEY", ""),
-)
- 
+MODEL = "claude-opus-5"
+
+SYSTEM_PROMPT = "You are Standby's travel agent. Reply in at most 3 short lines."
+
+# Reads ANTHROPIC_API_KEY from the environment.
+client = Anthropic()
+
 agent = Agent(
     name="ASI uAgent",
-    seed="REDACTED_AGENT_SEED",
+    seed=os.getenv("AGENT_SEED", "REDACTED_AGENT_SEED"),
     port=8001,
     mailbox=True,
     publish_agent_details=True,
@@ -66,19 +62,19 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     # query the model based on the user question
     response = 'I am afraid something went wrong and I am unable to answer your question at the moment'
     try:
-        r = client.chat.completions.create(
-            model="asi1",
-            messages=[
-                {"role": "system", "content": f"""
-        You are a helpful assistant who only answers questions about {subject_matter}. If the user asks 
-        about any other topics, you should politely say that you do not know about them.
-                """},
-                {"role": "user", "content": text},
-            ],
+        r = client.messages.create(
+            model=MODEL,
+            # Thinking is on by default and shares this budget with the reply,
+            # so keep headroom even though the HUD copy itself is short.
             max_tokens=2048,
+            # Short, latency-sensitive replies: spend as few thinking tokens as possible.
+            output_config={"effort": "low"},
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": text}],
         )
- 
-        response = str(r.choices[0].message.content)
+
+        # content is a list of blocks (thinking, text, ...) — never index [0] blindly.
+        response = "".join(b.text for b in r.content if b.type == "text")
     except:
         ctx.logger.exception('Error querying model')
  

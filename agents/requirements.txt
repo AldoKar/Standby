@@ -1,6 +1,5 @@
 uagents
 uagents-core
-openai
 anthropic
 python-dotenv
 httpx
