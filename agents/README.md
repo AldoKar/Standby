@@ -8,7 +8,9 @@
 | Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
 | Caller | `standby-caller` | _not built yet — skeleton only, see "What's left"_ | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
 
-Shared asi1.ai chat URL: _fill in after the first chat (see "Verify it" below)_
+Shared asi1.ai chat URL: `https://asi1.ai/chat/6207e90a-0ea7-4d71-bbfd-8415b2171162`
+_(working run, 2026-10-17 21:39 — **share it from the chat menu before submitting**, the
+link above is private until you do)_
 
 ## Versions
 
@@ -134,20 +136,26 @@ agent at once would share a trip. Fine for the demo, wrong for production.
 ## Checklist (Fetch requirements)
 
 - [x] Registered on Agentverse, Chat Protocol manifest published (`AgentChatProtocol 0.3.0`)
-- [x] The whole flow runs in one chat: cancelled → options → approve → book → call → result
-- [x] **More than one message per user turn works** — "approve" returns the booking, then the
-      call outcome, as two separate `ChatMessage`s. Verified agent-to-agent over the real
-      transport; confirm the asi1.ai UI renders both when you run step 2 above.
+- [x] The whole flow runs in one chat: cancelled → options → approve → book → call →
+      result. **Confirmed on asi1.ai 2026-10-17 21:39.**
+- [x] **More than one message per user turn works, confirmed in the asi1.ai UI** — one
+      `@standby approve` produced two separate bubbles: the booking, then the call outcome
+      with the door code and ledger. This was the open question from the plan's 6 PM
+      checkpoint.
 - [x] `EndSessionContent` is sent only with the final result, never earlier
 - [ ] Innovation Lab + hackathon badges and a search-style description — `readme_path` and
       `description` on the constructor do **not** publish to the Agentverse profile for a
       mailbox agent. Paste `orchestrator/README.md` into the profile's Agent Guide by hand.
-- [ ] ASI:One finds the agent by plain-language query (needs a real chat to confirm)
-- [x] Interactive Cards: options carousel, review card with Approve and the fee allowance,
-      terminal result card — built and structurally validated. Text rides above every card
-      and is what shows if ASI:One rejects one. **Needs one asi1.ai run to confirm rendering.**
+- [x] Found and driven through ASI:One by `@standby` handle
+- [ ] Found by *plain-language* query with no handle (not yet tested — this is the
+      eligibility criterion, worth one more run)
+- [ ] Interactive Cards: all three built and structurally validated against the spec, but
+      **asi1.ai renders the text, not the cards** (tested 2026-10-17 with a direct
+      `@standby` mention). The documented behaviour is a silent fallback to text, which is
+      what we see. Cards stay attached — they cost nothing and lose nothing. See
+      "Interactive Cards" below for what was tried.
 - [ ] Caller agent paid through the Payment Protocol, with a retry-on-voicemail path
-- [ ] Shared chat URL pasted into the table above
+- [ ] Share the chat publicly and confirm the URL above opens for someone logged out
 
 ## Interactive Cards
 
@@ -160,6 +168,13 @@ silently falls back to that same text. Nothing is lost either way.
 | Options | `carousel` | After `get_booking` / `search_flights`. The pick is badged **Recommended** and is the only item with a button; the two the policy ruled out carry their reason in the subtitle and no CTA, which is this surface's version of struck through. |
 | Review | `review` | After `request_approval`. Flight, departure, arrival, price, budget left afterwards, fee allowance; **Approve $215** and **No, not this one**. |
 | Result | `review`, terminal | When the task resolves. Room, door code, who was spoken to, fee, spent, refund pending. Not interactive. |
+
+**Status: asi1.ai did not render them.** Both a planner-routed and a direct `@standby`
+message came back as plain text. Fetch's spec says an unrenderable card degrades silently
+to the accompanying text, which matches what we saw, so this may be a payload the UI
+rejects or simply a surface that does not draw cards yet. The text path is unaffected and
+is what the demo shows. Left attached rather than ripped out: zero cost if unrendered,
+and it works the moment the surface supports it.
 
 A button press arrives as a JSON selection string (`{"action": "approve", …}`).
 `as_instruction()` turns it into the sentence the traveller would have typed, so card taps
