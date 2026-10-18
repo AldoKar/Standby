@@ -72,6 +72,7 @@ class State:
         self.flow_source: str | None = None  # glasses / simulate / asi1
         self.raw_options: list[dict] = []  # unranked, so a new spending limit can re-rank them
         self.proposal: dict | None = None  # the spending limit offered at cancellation (budget consent)
+        self.budget_draft: dict | None = None  # a budget the traveler said, waiting for the confirm tap
         self.choices: list[dict] = []  # the flights listed on the glasses, recommended first
         self.cursor = 0  # which of them is highlighted
         self.pick: dict | None = None
@@ -85,6 +86,7 @@ class State:
         self.before_answer: dict | None = None  # the screen an /ask answer covered
         self.claim: dict | None = None  # the travel-benefit claim for this trip (claims.py)
         self.claim_drafting = False
+        self.claim_rush: asyncio.Event | None = None  # set when the wearer taps past the outcome: show the claim now
 
 
 def booking() -> dict:
@@ -246,7 +248,38 @@ async def show_consent() -> None:
     tonight's prices, instead of the traveler setting rules before every trip."""
     b = booking()
     await show("cancelled", [f"{b['flight']} cancelled", f"Fix it for up to ${S.proposal['limit_usd']:g}?",
-                             "Tap = yes, Swipe = no"], {"press": "fix", "swipe_down": "no"})
+                             "Tap = yes, Hold = budget, Swipe = no"],
+               {"press": "fix", "hold": "budget", "swipe_down": "no"})
+
+
+async def ask_budget() -> None:
+    """Hold on the budget consent (or "change the budget"): the traveler says the amount they want."""
+    await show("budget_ask", ["New budget?", "Say an amount", "Tap = back"], {"press": "back"})
+
+
+def traveler_budget(amount: float) -> dict:
+    """The limit the traveler asked for, kept between the cheapest on-time fare and LIMIT_MAX_USD (no rounding:
+    they named the number). Same shape as propose_limit()."""
+    fares = sorted(o["price_usd"] for o in on_time(S.raw_options or S.options) if o["price_usd"] > 0)
+    low, high = (fares[0], fares[-1]) if fares else (0, 0)
+    limit = float(min(LIMIT_MAX_USD, max(low, round(amount))))
+    return {"limit_usd": limit, "ask_over_usd": S.mandate.ask_over_usd, "fares_usd": [low, high],
+            "reason": f"You set ${limit:g} on the glasses.", "proposed_by": "traveler", "asked_usd": amount}
+
+
+async def confirm_budget(amount: float) -> None:
+    """The traveler said a budget: show it for a tap (confirm) or a swipe (roll back to the proposed one)."""
+    S.budget_draft = draft = traveler_budget(amount)
+    limit, low = draft["limit_usd"], draft["fares_usd"][0]
+    if amount < low:
+        note = f"Lowest fare ${low:g}"
+    elif amount > LIMIT_MAX_USD:
+        note = f"Max ${LIMIT_MAX_USD:g}"
+    else:
+        note = f"Was ${S.proposal['limit_usd']:g}"
+    await publish("budget.requested", {"asked_usd": amount, "limit_usd": limit, "was_usd": S.proposal["limit_usd"]})
+    await show("budget_confirm", [f"Budget ${limit:g}?", note, "Tap = confirm, Swipe = roll back"],
+               {"press": "confirm", "swipe_down": "roll back"})
 
 
 LIMIT_STEP = 50  # limits are round numbers
@@ -612,8 +645,7 @@ async def after_booking() -> None:
         if not S.call_started:  # Claude decided no call is needed
             S.stage = "resolved"
             await publish("task.resolved", {"flight": p["flight"], "lodging": None})
-            await show("resolved", ["All set", "No call needed"], {"press": "dismiss"}, 10)
-            start_claim()
+            await show_outcome("resolved", ["All set", "No call needed"])
         return
     if not S.call_started:
         await call_lodging()
@@ -669,8 +701,7 @@ async def call_failed(reason: str) -> None:
     S.outcome = {"held": False, "error": reason, "verified": False}
     await publish("call.completed", {"outcome": S.outcome, "transcript_url": None, "verified": False})
     S.stage = "resolved"
-    await show("call_failed", ["Call didn't connect", "Details on your phone"], {"press": "dismiss"}, 10)
-    start_claim()
+    await show_outcome("call_failed", ["Call didn't connect", "Details on your phone"])
 
 
 async def request_fee(amount: float, reason: str, merchant: str | None = None, mcc: str | None = None) -> dict:
@@ -712,17 +743,28 @@ async def finish_call(outcome: dict, transcript_url: str | None, transcript: str
         lines = ["Room held", "Door code on phone"]  # never show an unverified code
     else:
         screen_id, lines = "not_held", ["Room not held", "Details on your phone"]
-    await show(screen_id, lines, {"press": "dismiss"}, 10)
-    start_claim()
+    await show_outcome(screen_id, lines)
 
 
 # ---------- travel-benefit claim ----------
+
+async def show_outcome(screen_id: str, lines: list[str]) -> None:
+    """The trip's outcome (room held, not held, call failed, all set). If money can come back, the claim is
+    drafted meanwhile and follows on its own; a tap (or "OK") skips ahead to it instead of ending the trip,
+    which used to drop the claim. Without a claim coming, a tap ends the trip as before."""
+    start_claim()
+    if S.claim_drafting:
+        await show(screen_id, lines, {"press": "next"})  # no auto-clear: the claim replaces it
+    else:
+        await show(screen_id, lines, {"press": "dismiss"}, 10)
+
 
 def start_claim() -> None:
     """Called when the trip resolves. Marks the claim as drafting right away, so GET /claim waits for it."""
     if S.claim or not S.ledger.spends:
         return
     S.claim_drafting = True
+    S.claim_rush = asyncio.Event()
     run_later(prepare_claim(S.task_id))
 
 
@@ -735,10 +777,18 @@ async def prepare_claim(task_id: str | None) -> None:
     finally:
         if S.task_id == task_id:
             S.claim_drafting = False
+            if not S.claim and S.screen["screen_id"] in ("claim_drafting", "resolved", "not_held", "call_failed"):
+                # Nothing the benefits cover (or drafting failed): the outcome's "next" now ends the trip.
+                gestures = {"press": "dismiss"}
+                if S.screen["screen_id"] == "claim_drafting":
+                    await show("resolved", ["All set", "Nothing to claim"], gestures, 10)
+                elif S.screen["gestures"] != gestures:
+                    await show(S.screen["screen_id"], S.screen["lines"], gestures, 10)
 
 
 async def draft_claim(task_id: str | None) -> None:
     shown_at = asyncio.get_running_loop().time() + CLAIM_DELAY_S  # Claude drafts while the outcome is shown
+    rush = S.claim_rush
     filed: dict = {}
 
     async def read_ledger(_: dict) -> dict:
@@ -765,7 +815,11 @@ async def draft_claim(task_id: str | None) -> None:
         if problems:
             return  # nothing the benefits cover
         filed.update(items=items, letter=claim_letter(items))
-    await asyncio.sleep(max(0.0, shown_at - asyncio.get_running_loop().time()))
+    try:  # the outcome stays up for a moment, unless the wearer already tapped past it
+        await asyncio.wait_for(rush.wait() if rush else asyncio.sleep(3600),
+                               max(0.0, shown_at - asyncio.get_running_loop().time()))
+    except asyncio.TimeoutError:
+        pass
     if S.task_id != task_id or S.claim:  # dismissed meanwhile
         return
     total = round(sum(x["amount_usd"] for x in filed["items"]), 2)
@@ -866,8 +920,27 @@ async def input_(g: Gesture):
             await submit_claim("glasses")
         else:  # later: it stays ready in the Vault, submit from the phone
             await show("resolved", ["Claim saved", "Submit from phone"], {"press": "dismiss"}, 10)
+    elif stage == "cancelled" and gesture == "hold" and S.screen["screen_id"] == "cancelled" and S.proposal:
+        await ask_budget()
+    elif S.screen["screen_id"] == "budget_ask" and gesture == "press":
+        await show_consent()  # back, nothing changed
+    elif S.screen["screen_id"] == "budget_confirm" and gesture in ("press", "swipe_down"):
+        if gesture == "press" and S.budget_draft:  # confirmed: this budget, then the flights under it
+            S.proposal, S.budget_draft = S.budget_draft, None
+            await publish("budget.proposed", S.proposal)
+            await accept_limit("glasses")
+            await offer_choices()
+        else:  # roll back to the budget that was proposed
+            S.budget_draft = None
+            await publish("budget.rolled_back", {"limit_usd": S.proposal["limit_usd"] if S.proposal else None})
+            await show_consent()
     elif gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
+    elif gesture == "press" and stage == "resolved" and S.claim_drafting and not S.claim:
+        # Tapped past the outcome while the claim is being drafted: go to it, never drop it.
+        if S.claim_rush:
+            S.claim_rush.set()
+        await show("claim_drafting", ["Getting money back", "Checking your benefits"], {})
     elif gesture == "press" and stage == "resolved":
         await show("idle", [], {})
         S.reset()
@@ -1041,6 +1114,16 @@ async def voice_(v: VoiceInput):
         return {**result, "reason": note if failed else "didn't match a command on this screen"}
     if voice.needs_tap(v.screen_id, intent):
         return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
+    if intent == "budget" and not S.proposal:  # "Not booked" reuses `cancelled` without a budget to change
+        return {**result, "intent": "unknown", "gesture": None, "reason": "no budget to change on this screen"}
+    if intent == "budget":  # "make it 450" → confirm it with a tap; "change the budget" → ask for the amount
+        amount = voice.parse_amount(transcript)
+        if amount:
+            await confirm_budget(amount)
+        else:
+            await ask_budget()
+        return {**result, "gesture": None, "handled": True, "stage": S.stage,
+                "reason": f"budget ${amount:g}: tap to confirm" if amount else "say an amount"}
     if voice.is_local(v.screen_id, intent):  # hide / show the call: the glasses do it, nothing changes here
         return {**result, "gesture": None, "handled": True, "reason": "local"}
     # The screen may have changed while we were transcribing; /input checks screen_id again.

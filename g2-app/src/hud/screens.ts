@@ -74,6 +74,8 @@ export const VOICE_SCREENS = new Set([
   'not_held',
   'call_failed',
   'claim_submitted',
+  // the budget: "make it 450" on the consent, or the amount after Hold = budget (the confirm is tap-only)
+  'budget_ask',
   'answer',
   // "hide it" / "show it": the call view (hud/callView.ts), done on the glasses
   'calling',
@@ -143,6 +145,11 @@ const STYLES: Record<string, Style> = {
   flight_list: { header: 'Pick your flight', list: true },
   claim_ready: { header: 'Money back', icon: 'check' },
   claim_submitted: { header: '', icon: 'check' },
+  // Another budget (Hold on the consent): say it, then a tap confirms it or a swipe rolls back.
+  budget_ask: { header: 'Change budget', icon: 'none' },
+  budget_confirm: { header: 'Confirm budget', icon: 'alert', alert: true },
+  // Tapped past the outcome while the claim is drafted: it follows in a moment.
+  claim_drafting: { header: 'Money back', icon: 'clock' },
 }
 
 export const HOME_LINE = 'Ask Standby about your travel'
@@ -238,7 +245,7 @@ export function fromEngine(s: EngineScreen): HudScreen {
   const offered = GESTURE_ORDER.filter((g) => s.gestures[g])
   const tapConfirms = Boolean(s.gestures.hold) && !s.gestures.press
   const choices = parsed
-    ? offered.slice(0, 2).map((g) => ({
+    ? offered.map((g) => ({
         // With tap-to-confirm, the approve button is labelled with the easier gesture.
         gesture: g === 'hold' && tapConfirms ? ('tap' as const) : CAPTION[g],
         // Engine wording as-is ("fix it", "OK", "no"); `gestures` values fill in what the line doesn't mention.
@@ -248,7 +255,9 @@ export function fromEngine(s: EngineScreen): HudScreen {
 
   // Screens that only close (outcome, claim submitted): say how, since there's no gesture line.
   // Voice works here too ("OK", "got it"); the tag shows it.
-  const closeOnly = !choices && s.gestures.press === 'dismiss' && Object.keys(s.gestures).length === 1
+  // An outcome with the claim on its way says "next" instead (the tap goes to the claim).
+  const onlyPress = !choices && Object.keys(s.gestures).length === 1 ? s.gestures.press : undefined
+  const closeLabel = onlyPress === 'dismiss' ? 'close' : onlyPress === 'next' ? 'next' : undefined
   const third = lines[2]
   return {
     id: s.screen_id,
@@ -257,7 +266,7 @@ export function fromEngine(s: EngineScreen): HudScreen {
     // With a bar (calling), the third line moves to the footer so it stays visible.
     detail: style.bar ? undefined : third,
     footer: style.bar ? third : undefined,
-    choices: choices && choices.length ? choices : closeOnly ? [{ gesture: 'tap', label: 'close' }] : undefined,
+    choices: choices && choices.length ? choices : closeLabel ? [{ gesture: 'tap', label: closeLabel }] : undefined,
     gestures: s.gestures,
     tapConfirms,
   }

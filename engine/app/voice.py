@@ -35,7 +35,9 @@ MAX_AUDIO_BYTES = 1_500_000  # ~45 s of 16 kHz mono WAV; voice commands are a fe
 
 # Intents each screen accepts, and the gesture each one becomes. Anything else is "unknown".
 INTENTS: dict[str, dict[str, str]] = {
-    "cancelled": {"fix": "press", "reject": "swipe_down"},  # yes / no to the proposed spending limit
+    # yes / no to the proposed spending limit, or another budget ("make it 450": confirmed with a tap)
+    "cancelled": {"fix": "press", "reject": "swipe_down", "budget": "budget"},
+    "budget_ask": {"budget": "budget", "dismiss": "press"},  # say the amount, or "back"
     "declined": {"fix": "press"},
     # Handled apart (choose_flight below, Ollama): "book it" = the highlighted row, "the Alaska one" = that
     # row. Either way /voice only returns the row; the glasses select it and the booking needs a tap.
@@ -74,6 +76,8 @@ DESCRIPTIONS = {
               "(for example: no, don't, that's too much, tell them no, not that).",
     "other_option": "The traveler asks for a different option instead of the one shown "
                     "(for example: another flight, other trips, something else, what else is there).",
+    "budget": "The traveler wants a different spending limit, usually naming an amount "
+              "(for example: make it 450, change the budget, 400 dollars, can we go up to 500, lower it to 250).",
     "dismiss": "The traveler is done with what the glasses show and wants it closed "
                "(for example: OK, got it, thanks, done, close it, go back).",
     "hide": "The traveler wants the call screen out of the way, made small "
@@ -115,8 +119,45 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z' ]+", " ", text.lower()).strip()
 
 
+_SMALL = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+          "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+          "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+          "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+
+
+def parse_amount(transcript: str) -> float | None:
+    """A dollar amount in what was said: "450", "$450", "1,000", "1.2k", "four hundred fifty"."""
+    m = re.search(r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b|thousand\b)?", transcript.lower())
+    if m:
+        value = float(m.group(1).replace(",", ""))
+        return value * 1000 if m.group(2) else value
+    total, current, seen, parts, scaled = 0, 0, False, [], False
+    for w in re.sub(r"[^a-z ]+", " ", transcript.lower().replace("-", " ")).split():
+        if w in _SMALL:
+            current += _SMALL[w]
+            parts.append(_SMALL[w])
+            seen = True
+        elif w == "hundred" and seen:
+            current, scaled = (current or 1) * 100, True
+        elif w == "thousand" and seen:
+            total, current, scaled = total + (current or 1) * 1000, 0, True
+        elif w in ("and", "a") and seen:
+            continue
+        elif seen:
+            break
+    value = total + current
+    if not scaled and len(parts) >= 2 and parts[0] < 10 and parts[1] >= 10:
+        value = parts[0] * 100 + sum(parts[1:])  # "two fifty" = 250, "three twenty five" = 325
+    return float(value) if seen and value > 0 else None
+
+
+BUDGET_WORDS = {"budget", "limit", "change", "raise", "lower", "increase", "decrease", "up", "down", "more", "less"}
+
+
 def _fast_intent(transcript: str, allowed: dict[str, str]) -> str | None:
     words = _normalize(transcript).split()
+    if "budget" in allowed and (parse_amount(transcript) or set(words) & {"budget", "limit"}):
+        return "budget"  # a number on the budget screens is always a budget, whatever words come with it
     if not words or len(words) > FAST_MAX_WORDS:
         return None
     phrase = " ".join(words)

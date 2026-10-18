@@ -36,7 +36,8 @@ Defined in `engine/app/voice.py`. Every other phrase is `unknown` and changes no
 
 | `screen_id` | Intent → gesture | Notes |
 |---|---|---|
-| `cancelled` | `fix` → `press` (yes to the spending limit) · `reject` → `swipe_down` | "yes", "fix it", "go ahead"; "no" spends nothing |
+| `cancelled` | `fix` → `press` (yes to the spending limit) · `reject` → `swipe_down` · `budget` | "yes", "fix it", "go ahead"; "no" spends nothing; any amount ("make it 450", "two fifty") or "change the budget" is `budget`: with an amount it shows `budget_confirm` (tap = confirm, swipe = roll back; tap-only, no voice there), without one `budget_ask` |
+| `budget_ask` | `budget` · `dismiss` → `press` (back) | Say the amount |
 | `declined` | `fix` → `press` | "fix it" brings the limit back |
 | `flight_list` | `choose` (with `index`) → tap to confirm | Picked by **Ollama** (`OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_API_KEY` for Ollama Cloud): "the Alaska one", "the cheapest", "the ten o'clock", "the second one" name a row; "book it" / "yes" is the highlighted row (no model call). The engine changes nothing: `/voice` returns `intent: "choose"`, `index`, `confirm_required: true`; the glasses send `select` with that row and open the tap-to-confirm dialog naming the flight. If Ollama can't answer, a keyword match (airline, flight number, position, cheapest, hour) is used and `reason` says `ollama failed: ...` |
 | `booking_offer` | `approve` → tap to confirm · `other_option` → `swipe_down` | "book it" asks for a tap; "another one" / "no" shows the other option |

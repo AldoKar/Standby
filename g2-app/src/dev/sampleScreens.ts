@@ -13,9 +13,15 @@ const s = (
 export const SAMPLE_SCREENS: Record<string, EngineScreen> = {
   ready: s('ready', ['Ready', 'Tap = start, Hold = ask'], { press: 'start', hold: 'ask' }),
   answer: s('answer', ['UA1372 on time', 'Gate 85, Terminal 8', 'Departs 7:40 AM'], { press: 'dismiss', hold: 'ask' }, 10),
-  cancelled: s('cancelled', ['UA183 cancelled', 'Fix it for up to $300?', 'Tap = yes, Swipe = no'], {
+  cancelled: s('cancelled', ['UA183 cancelled', 'Fix it for up to $300?', 'Tap = yes, Hold = budget, Swipe = no'], {
     press: 'fix',
+    hold: 'budget',
     swipe_down: 'no',
+  }),
+  budget_ask: s('budget_ask', ['New budget?', 'Say an amount', 'Tap = back'], { press: 'back' }),
+  budget_confirm: s('budget_confirm', ['Budget $450?', 'Was $300', 'Tap = confirm, Swipe = roll back'], {
+    press: 'confirm',
+    swipe_down: 'roll back',
   }),
   declined: s('declined', ['OK, nothing spent', 'Tap = fix it'], { press: 'fix' }),
   flight_list: s('flight_list', ['> Delta 9:15 PM $215', '  Alaska 9:45 PM $239', '  WN2210 10:00 PM $229'], {
