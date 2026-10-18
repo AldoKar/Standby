@@ -1,8 +1,8 @@
 // Engine hud.screen → lens screen model (design option B).
 // The engine writes every word. This file only decides HOW it looks: which line is bright, which is dim,
 // the icon and alert border per screen_id, and turning the gesture line ("Hold = OK, Swipe = no") into
-// buttons whose labels come from that same line. The only app-owned text is the small status header
-// and the offline/error screens.
+// one native hint line whose labels come from that same line. The only app-owned text is the small status
+// header, the confirm step and the offline/error screens.
 import type { EngineScreen, Gesture } from '../engine/types'
 
 export type HudIcon = 'none' | 'search' | 'plane' | 'check' | 'alert' | 'phone' | 'clock'
@@ -20,8 +20,12 @@ export type HudScreen = {
   alert?: boolean // bordered card around the main zone
   bar?: HudBar
   busy?: boolean // open-ended wait → dot spinner (not used by the current engine flow)
-  choices?: HudChoice[] // max 2 buttons, each with its gesture below
+  choices?: HudChoice[] // rendered as one hint line: "Tap = book  ·  Swipe ↓ = other" (replaces `footer`)
   gestures: Partial<Record<Gesture, string>> // what the engine accepts on this screen
+  // Tap-then-confirm (SPEC fallback for long press): on screens where the engine offers `hold` = approve but
+  // not `press`, a tap opens a local confirm screen; a second tap sends `hold`. Long press still works directly.
+  tapConfirms?: boolean
+  confirm?: { of: HudScreen } // set on the local confirm screen; `of` is the engine screen being approved
 }
 
 type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar'>
@@ -46,8 +50,6 @@ const CAPTION: Record<Gesture, ChoiceGesture> = { press: 'tap', hold: 'hold', sw
 const KEYWORD: Record<string, Gesture> = { tap: 'press', press: 'press', hold: 'hold', swipe: 'swipe_down' }
 // "Tap = fix it", "Hold to book", "Hold = OK, Swipe = no", "Tap to start"
 const PART = /^(tap|press|hold|swipe)(?:\s*down)?\s*(?:=|to)\s*(.+)$/i
-
-const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s)
 
 /** Labels per gesture from the engine's gesture line, or null if the line isn't one. */
 function parseGestureLine(line: string): Partial<Record<Gesture, string>> | null {
@@ -82,8 +84,14 @@ export function fromEngine(s: EngineScreen): HudScreen {
     lines.pop()
   }
   const offered = GESTURE_ORDER.filter((g) => s.gestures[g])
+  const tapConfirms = Boolean(s.gestures.hold) && !s.gestures.press
   const choices = parsed
-    ? offered.slice(0, 2).map((g) => ({ gesture: CAPTION[g], label: capitalize(labels[g] ?? s.gestures[g] ?? g) }))
+    ? offered.slice(0, 2).map((g) => ({
+        // With tap-to-confirm, the approve button is labelled with the easier gesture.
+        gesture: g === 'hold' && tapConfirms ? ('tap' as const) : CAPTION[g],
+        // Engine wording as-is ("fix it", "OK", "no"); `gestures` values fill in what the line doesn't mention.
+        label: labels[g] ?? s.gestures[g] ?? g,
+      }))
     : undefined
 
   const third = lines[2]
@@ -96,6 +104,27 @@ export function fromEngine(s: EngineScreen): HudScreen {
     footer: style.bar ? third : undefined,
     choices: choices && choices.length ? choices : undefined,
     gestures: s.gestures,
+    tapConfirms,
+  }
+}
+
+/**
+ * Local "tap again" step before an approval reaches the engine. Same facts on screen, so the wearer
+ * confirms what they just read; swipe goes back without sending anything.
+ */
+export function confirmScreen(of: HudScreen): HudScreen {
+  const label = of.choices?.find((c) => c.gesture === 'tap')?.label ?? 'confirm'
+  return {
+    ...of,
+    id: `confirm:${of.id}`,
+    header: 'STANDBY · TAP AGAIN TO CONFIRM',
+    choices: [
+      { label, gesture: 'tap' },
+      { label: 'back', gesture: 'swipe' },
+    ],
+    gestures: {},
+    tapConfirms: false,
+    confirm: { of },
   }
 }
 

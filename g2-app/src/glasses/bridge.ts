@@ -25,6 +25,11 @@ import { PADDING, type PagePlan } from '../hud/layout'
 export type BridgeStatus = 'connecting' | 'connected' | 'browser' | 'error'
 export type GlassesInput = 'tap' | 'double_tap' | 'long_press' | 'scroll_up' | 'scroll_down'
 
+// Team decision: double tap does nothing in the app (it must never close Standby mid-demo).
+// ⚠ Even's review expects double tap to exit via shutDownPageContainer(1) (see SKILLEVEN.md); the system may
+// also show its own exit dialog on the root page regardless. Flip to `true` before submitting if Even asks.
+const DOUBLE_TAP_EXITS = false
+
 const BRIDGE_TIMEOUT_MS = 2500
 const CALL_TIMEOUT_MS = 4000
 const RENDER_DEBOUNCE_MS = 120
@@ -274,9 +279,12 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
       const input = toInput(event)
       if (!input) return
       if (input === 'double_tap') {
-        // Double tap = exit. Never intercept (store review rule).
-        log('double tap → shutDownPageContainer(1)')
-        void bridge?.shutDownPageContainer(1)
+        if (DOUBLE_TAP_EXITS) {
+          log('double tap → shutDownPageContainer(1)')
+          void bridge?.shutDownPageContainer(1)
+        } else {
+          log('double tap ignored (DOUBLE_TAP_EXITS = false)')
+        }
       }
       emitInput(input)
     })

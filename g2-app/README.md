@@ -31,8 +31,9 @@ The engine's `lines` are shown verbatim. The app only decides the look (`src/hud
 
 - Icon, alert border and a small status header per `screen_id` (e.g. `calling` → "STANDBY IS CALLING", phone icon,
   voice-wave animation).
-- The gesture line ("Hold = OK, Swipe = no", "Hold to book", "Tap = fix it") becomes buttons; labels come from that
-  line, or from `gestures` values for gestures the line doesn't mention ("Other").
+- The gesture line ("Hold = OK, Swipe = no", "Hold to book", "Tap = fix it") becomes one native hint line at the
+  bottom, left-aligned like Even's own apps: "Tap = book  ·  Swipe ↓ = other". Labels come from that line, or from
+  `gestures` values for gestures the line doesn't mention ("other"). No fake buttons, so nothing to centre.
 - `clear_after_s` blanks the lens; an empty `lines` is a blank lens.
 - Never "pay", "card" or "Visa" in the app-owned header.
 
@@ -40,12 +41,14 @@ The engine's `lines` are shown verbatim. The app only decides the look (`src/hud
 
 | Temple | Sent | Notes |
 |---|---|---|
-| Tap | `press` | |
-| Long press | `hold` | approve |
-| Swipe down | `swipe_down` | ignored for 900 ms after a new screen (the simulator emits stray scroll events on rebuild) |
-| Double press | nothing | left to the system exit dialog |
+| Tap | `press` | On approval screens (engine offers `hold`, not `press`): opens a local "Tap again to confirm" screen |
+| Tap again (on confirm) | `hold` | for the original screen; the confirm screen times out back to the offer after 6 s |
+| Long press | `hold` | still approves directly |
+| Swipe down | `swipe_down` | on the confirm screen: back, nothing sent. Ignored for 900 ms after a new screen (stray scroll events on rebuild) |
+| Double press | nothing | `DOUBLE_TAP_EXITS = false` in `src/glasses/bridge.ts`. ⚠ Even review expects double press to exit; flip it if they ask |
 
 Only gestures listed in the current screen's `gestures` are sent, always with its `screen_id`, one at a time.
+Tap-then-confirm is the SPEC's long-press fallback, done on the glasses so the engine contract is unchanged.
 
 Presenter keys on the page: Space = tap, H = hold, ↓ = swipe down.
 

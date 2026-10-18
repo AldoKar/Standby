@@ -26,7 +26,7 @@ const STEPS: { n: Step; title: string; description: string; icon: ReactNode }[] 
   {
     n: 2,
     title: 'Rebook',
-    description: 'Delta 9:15 PM fits the $300 mandate. Hold on the glasses to book.',
+    description: 'Delta 9:15 PM fits the $300 mandate. Tap on the glasses, then tap again to book.',
     icon: icon(<path d="M2 13l7-1 5-8h2l-3 8h5l2-3h2l-1 4 1 4h-2l-2-3h-5l3 8h-2l-5-8-7-1z" />),
   },
   {

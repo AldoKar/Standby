@@ -35,7 +35,7 @@ export function eventToChat(e: EngineEvent): ChatLine | null {
     case 'approval.requested':
       return {
         role: 'agent',
-        text: `${e.data.merchant} ${usd(e.data.amount)} (${e.data.reason}). Hold on the glasses to OK it, swipe down for no.`,
+        text: `${e.data.merchant} ${usd(e.data.amount)} (${e.data.reason}). Tap on the glasses, then tap again to confirm; swipe down for no.`,
       }
     case 'approval.granted':
       return { role: 'system', text: `👓 Approved via ${e.data.via}` }

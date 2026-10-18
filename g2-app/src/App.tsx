@@ -13,7 +13,7 @@ import type { EngineEvent, Gesture } from './engine/types'
 import { publish, subscribe } from './events/bus'
 import { emitInput, initGlasses, onGlassesInput, type BridgeStatus, type GlassesInput } from './glasses/bridge'
 import { currentPagePlan, currentScreen, showScreen, subscribeHud } from './hud/controller'
-import { sendGesture } from './hud/gestures'
+import { handleGesture } from './hud/gestures'
 import { planScreen } from './hud/layout'
 import { fromEngine, idleScreen, offlineScreen, type HudScreen } from './hud/screens'
 
@@ -64,6 +64,8 @@ function stepFor(e: EngineEvent): Step | null | 'reset' {
 
 // Temple gestures → contract gestures. Double press is never mapped (the bridge leaves it to the system).
 const GESTURE_FOR: Partial<Record<GlassesInput, Gesture>> = { tap: 'press', long_press: 'hold', scroll_down: 'swipe_down' }
+
+const DOUBLE_TAP_ECHO_MS = 600
 
 // Presenter shortcuts: Space = tap, H = hold, ↓ = swipe down. Ignored while typing.
 const KEYS: Record<string, GlassesInput> = { ' ': 'tap', h: 'long_press', H: 'long_press', ArrowDown: 'scroll_down' }
@@ -118,14 +120,22 @@ function App() {
   }, [engine])
 
   // Gestures (temple, mirror buttons or keyboard) act on whatever screen is showing right now.
-  useEffect(
-    () =>
-      onGlassesInput((input) => {
-        const gesture = GESTURE_FOR[input]
-        if (gesture) void sendGesture(engine, gesture)
-      }),
-    [engine],
-  )
+  useEffect(() => {
+    let lastDoubleTap = -Infinity
+    return onGlassesInput((input) => {
+      // The simulator follows every DOUBLE_CLICK with a CLICK; that echo must not start or approve anything.
+      if (input === 'double_tap') {
+        lastDoubleTap = performance.now()
+        return
+      }
+      if (input === 'tap' && performance.now() - lastDoubleTap < DOUBLE_TAP_ECHO_MS) {
+        log('tap ignored: echo of a double tap')
+        return
+      }
+      const gesture = GESTURE_FOR[input]
+      if (gesture) void handleGesture(engine, gesture)
+    })
+  }, [engine])
 
   // Presenter shortcuts.
   useEffect(() => {

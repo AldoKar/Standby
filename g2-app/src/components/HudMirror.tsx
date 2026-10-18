@@ -34,6 +34,13 @@ const BUTTONS: { input: GlassesInput; gesture: Gesture; label: string; key: stri
   { input: 'scroll_down', gesture: 'swipe_down', label: 'Swipe down', key: '↓' },
 ]
 
+/** What a gesture does on this screen, including the local tap-then-confirm step (mirrors hud/gestures.ts). */
+function gestureMeaning(s: HudScreen, g: Gesture): string | undefined {
+  if (s.confirm) return g === 'press' || g === 'hold' ? 'confirm' : 'back'
+  if (g === 'press' && s.tapConfirms) return 'approve'
+  return s.gestures[g]
+}
+
 // Lens pixels → % of the mirror box, so the mirror scales with the column.
 const box = (x: number, y: number, w: number, h: number): CSSProperties => ({
   left: `${(x / LENS_W) * 100}%`,
@@ -92,7 +99,7 @@ export function HudMirror({ screen, plan, status, engineStatus, onInput }: Props
 
       <div className="gestures" role="group" aria-label="Glasses gestures">
         {BUTTONS.map((b) => {
-          const meaning = screen.gestures[b.gesture]
+          const meaning = gestureMeaning(screen, b.gesture)
           return (
             <button
               key={b.input}
