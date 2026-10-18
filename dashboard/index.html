@@ -6,34 +6,88 @@
 <title>Handle It dashboard</title>
 <!-- Owner: P4. Served by the engine at GET /. Point it at another engine with ?api=https://host -->
 <style>
-  :root { --bg: #f6f6f4; --card: #fff; --ink: #1c1c1a; --quiet: #6b6b66; --line: #e2e2dd; --hud: #43ff7a; --bad: #c0392b; --good: #1e8449; }
+  :root {
+    --bg: #f4f4f1; --card: #fff; --ink: #1c1c1a; --quiet: #63635d; --line: #e2e2dd; --soft: #efefeb; --hud: #43ff7a;
+    --bad: #b3261e; --bad-bg: #fbe9e7; --good: #17703c; --good-bg: #e5f3e9; --ask: #7a5200; --ask-bg: #fff2d6;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); }
-  header { display: flex; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
-  h1 { font-size: 17px; margin: 0 8px 0 0; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--quiet); margin: 0 0 10px; }
-  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; }
-  button:hover { border-color: var(--ink); }
-  #conn { color: var(--quiet); margin-left: auto; }
-  main { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr); gap: 16px; padding: 16px; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-  .wide { grid-column: 1 / -1; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 10px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0 8px 0 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--quiet); margin: 0 0 12px; font-weight: 600; }
+  h3 { font-size: 14px; margin: 16px 0 8px; }
+  button, .filebtn { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); cursor: pointer; }
+  button:hover:not([disabled]), .filebtn:hover { border-color: var(--ink); }
+  button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--soft); color: var(--quiet); }
+  #conn { margin-left: auto; color: var(--quiet); font-size: 13px; }
+  main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 16px 20px 32px; max-width: 1500px; margin: 0 auto; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+  .span2 { grid-column: span 2; }
+  .span3 { grid-column: 1 / -1; }
+  @media (max-width: 1100px) { main { grid-template-columns: repeat(2, minmax(0, 1fr)); } .span2 { grid-column: 1 / -1; } }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 12px 16px; } }
+
+  .quiet { color: var(--quiet); }
+  .small { font-size: 13px; }
+  .label { color: var(--quiet); font-size: 12px; margin-top: 12px; }
+  .big { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .chip.good { color: var(--good); background: var(--good-bg); }
+  .chip.bad { color: var(--bad); background: var(--bad-bg); }
+  .chip.ask { color: var(--ask); background: var(--ask-bg); }
+  .chip.neutral { color: var(--quiet); background: var(--soft); }
+  .scroll { overflow-x: auto; }
+
+  /* Glasses mirror */
   .hud { background: #000; color: var(--hud); font: 18px/1.5 ui-monospace, Menlo, monospace; border-radius: 8px; padding: 18px; min-height: 120px; }
   .hud div { min-height: 27px; }
-  .gestures { display: flex; gap: 8px; margin-top: 10px; }
+  .gestures { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .gestures button[disabled] { opacity: .35; cursor: default; }
-  .gesture-hint { color: var(--quiet); font-size: 12px; margin-top: 6px; }
+  .gesture-hint { color: var(--quiet); font-size: 12px; margin-top: 6px; min-height: 18px; }
+
+  /* Phone call */
+  #call-status { font-size: 16px; min-height: 24px; }
+  .steps { list-style: none; margin: 10px 0 0; padding: 0; }
+  .steps li { padding: 5px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .steps .t, #feed .t { color: var(--quiet); font-variant-numeric: tabular-nums; margin-right: 8px; font-size: 12px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0; }
+  dt { color: var(--quiet); }
+  dd { margin: 0; font-weight: 600; }
+  .rec { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .rec-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .rec audio { width: 100%; margin-top: 8px; height: 36px; }
+  .filebtn input { display: none; }
+  #play.nudge { outline: 3px solid var(--ask-bg); box-shadow: 0 0 0 5px #f2c66d; }
+
+  /* Ledger */
   table { width: 100%; border-collapse: collapse; }
-  td { padding: 3px 0; border-bottom: 1px solid var(--line); }
-  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-  #feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
-  #feed li { padding: 6px 0; border-bottom: 1px solid var(--line); }
-  #feed .t { color: var(--quiet); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  td, th { padding: 5px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #ledger tr.sum td { font-weight: 600; }
+  #consents { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  #consents li { padding: 3px 0; }
+
+  /* Policy trace */
+  #trace-context { margin: 0 0 12px; }
+  #options th { font-size: 12px; color: var(--quiet); font-weight: 600; padding-right: 12px; }
+  #options td { padding-right: 12px; }
+  #options tr.rejected .opt, #options tr.rejected .when { text-decoration: line-through; color: var(--quiet); }
+  #options tr.pick .opt { font-weight: 650; }
+  #checks { list-style: none; margin: 0; padding: 0; }
+  #checks li { padding: 8px 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+  #checks .what { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* Tests */
+  .meter { height: 8px; background: var(--soft); border-radius: 4px; overflow: hidden; margin: 8px 0 12px; }
+  .meter span { display: block; height: 100%; background: var(--ink); border-radius: 4px; }
+  .cases { list-style: none; margin: 0; padding: 0; }
+  .cases li { padding: 5px 0; border-top: 1px solid var(--line); font-size: 14px; }
+
+  /* Activity */
+  #feed { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; font-size: 13px; }
+  #feed li { padding: 5px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
   #feed .type { font-weight: 600; margin-right: 8px; }
-  .deny { color: var(--bad); }
-  .allow { color: var(--good); }
-  .label { color: var(--quiet); font-size: 12px; margin-top: 8px; }
-  @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -41,12 +95,13 @@
   <h1>Handle It</h1>
   <button id="simulate">Simulate cancellation</button>
   <button id="reset">Reset</button>
+  <span class="badge" id="mode">call: …</span>
   <span id="conn">connecting…</span>
 </header>
 <main>
   <section>
     <h2>Glasses (HUD mirror)</h2>
-    <div class="hud" id="hud"><div></div><div></div><div></div></div>
+    <div class="hud" id="hud" aria-live="polite"><div></div><div></div><div></div></div>
     <div class="gestures">
       <button data-g="press">Press</button>
       <button data-g="hold">Hold</button>
@@ -54,13 +109,51 @@
     </div>
     <div class="gesture-hint" id="hint"></div>
   </section>
+
+  <section>
+    <h2>Phone call to the guesthouse</h2>
+    <div id="call-status" aria-live="polite"></div>
+    <ol class="steps" id="call-steps"></ol>
+    <div id="call-outcome"></div>
+    <div class="rec">
+      <div class="rec-row">
+        <button id="play" class="primary">▶ Play recorded call</button>
+        <label class="filebtn">Other file…<input type="file" id="recfile" accept="audio/*"></label>
+      </div>
+      <audio id="rec" controls preload="metadata">
+        <source src="recorded-call.mp3" type="audio/mpeg">
+        <source src="dashboard/recorded-call.mp3" type="audio/mpeg">
+      </audio>
+      <div class="label" id="rec-hint">Fallback if the live call fails: a call recorded earlier.</div>
+    </div>
+  </section>
+
   <section>
     <h2>Mandate ledger</h2>
+    <div id="left"></div>
     <table id="ledger"></table>
+    <h3>Consent records</h3>
+    <ul id="consents"></ul>
     <div class="label" id="mandate"></div>
   </section>
-  <section class="wide">
-    <h2>Activity and policy trace</h2>
+
+  <section class="span2">
+    <h2>Policy trace: why each option was picked or rejected</h2>
+    <p id="trace-context"></p>
+    <div class="scroll"><table id="options"></table></div>
+    <h3>Every spend, checked against the mandate</h3>
+    <ul id="checks"></ul>
+    <div class="label">Decided in code (<code>engine/app/policy.py</code>). The LLM never decides a spend and never sees card data.</div>
+  </section>
+
+  <section>
+    <h2>Tests</h2>
+    <div id="tests"></div>
+    <div class="label"><button id="tests-refresh">Refresh</button></div>
+  </section>
+
+  <section class="span3">
+    <h2>Activity (every engine event)</h2>
     <ol id="feed"></ol>
   </section>
 </main>
@@ -68,8 +161,23 @@
 const API = new URLSearchParams(location.search).get('api') || '';
 const $ = (id) => document.getElementById(id);
 const post = (path, body) => fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-let clearTimer;
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const usd = (n) => (n == null || isNaN(n) ? '' : `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 })}`);
+const time = (ts) => (ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '');
+const chip = (cls, text) => `<span class="chip ${cls}">${esc(text)}</span>`;
+const VIA = { glasses: 'the glasses', asi1: 'ASI:One', api: 'the API' };
+const LEDGER_EVENTS = ['state.snapshot', 'payment.executed', 'mandate.checked', 'offer.declined', 'approval.granted', 'approval.rejected', 'call.completed', 'demo.reset'];
 
+// "21:15" -> "9:15 PM"
+function clock(t) {
+  if (!/^\d{1,2}:\d{2}$/.test(t || '')) return t || '';
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+// ---------- glasses mirror ----------
+
+let clearTimer;
 function renderScreen(s) {
   clearTimeout(clearTimer);
   const rows = $('hud').children;
@@ -80,13 +188,267 @@ function renderScreen(s) {
   if (s.clear_after_s) clearTimer = setTimeout(() => renderScreen({ lines: [], gestures: g }), s.clear_after_s * 1000);
 }
 
+// ---------- panel state, rebuilt from events ----------
+
+let taskId = null;
+let callMode = '';
+let trace, call, nudgeTimer;
+
+function resetPanels() {
+  trace = { cancelled: null, declined: null, options: [], checks: [] };
+  call = { steps: [], started: false, waiting: false, outcome: null, transcript: null, verified: false };
+  clearTimeout(nudgeTimer);
+  $('play').classList.remove('nudge');
+  $('rec-hint').textContent = 'Fallback if the live call fails: a call recorded earlier.';
+  renderTrace();
+  renderCall();
+}
+
+function callStep(e, text) {
+  call.steps.push({ ts: e.ts, text });
+  renderCall();
+}
+
+function nudge(text) {
+  $('play').classList.add('nudge');
+  $('rec-hint').textContent = text;
+}
+
+function handle(e) {
+  const d = e.data || {};
+  switch (e.type) {
+    case 'state.snapshot':
+      if (d.task_id !== taskId) resetPanels();
+      taskId = d.task_id;
+      callMode = d.call_mode || 'mock';
+      $('mode').textContent = `call: ${callMode}`;
+      if (d.options && d.options.length) trace.options = d.options;
+      if (['calling', 'fee'].includes(d.stage)) call.started = true;
+      call.waiting = d.stage === 'fee';
+      if (d.outcome) { call.outcome = d.outcome; call.verified = !!d.outcome.verified; }
+      renderTrace();
+      renderCall();
+      break;
+    case 'hud.screen':
+      renderScreen(d);
+      break;
+    case 'flight.cancelled':
+      if (e.task_id !== taskId) resetPanels();
+      taskId = e.task_id;
+      trace.cancelled = d;
+      renderTrace();
+      break;
+    case 'options.ranked':
+      trace.options = d.options || [];
+      renderTrace();
+      break;
+    case 'mandate.checked':
+      trace.checks.push({ ...d });
+      if (d.kind === 'fee' && d.result === 'deny') callStep(e, `Clerk asked for ${usd(d.amount)}: denied by the mandate (${d.reason})`);
+      if (d.kind === 'fee' && d.result === 'allow') callStep(e, `Clerk asked for ${usd(d.amount)}: within the limit, allowed without asking`);
+      renderTrace();
+      break;
+    case 'approval.requested': {
+      const c = [...trace.checks].reverse().find((x) => x.kind === d.kind && x.amount === d.amount && !x.approval_id);
+      if (c) Object.assign(c, { approval_id: d.approval_id, merchant: d.merchant });
+      if (d.kind === 'fee') {
+        clearTimeout(nudgeTimer);
+        call.waiting = true;
+        callStep(e, `Clerk asks +${usd(d.amount)} ${d.reason}. The agent puts the clerk on hold and asks the wearer`);
+      }
+      renderTrace();
+      break;
+    }
+    case 'approval.granted':
+    case 'approval.rejected': {
+      const ok = e.type === 'approval.granted';
+      const c = trace.checks.find((x) => x.approval_id === d.approval_id);
+      if (c) c.answer = { ok, via: d.via };
+      if (d.kind === 'fee') {
+        call.waiting = false;
+        callStep(e, ok ? `Wearer OK'd the fee on ${VIA[d.via] || d.via}` : `Wearer said no on ${VIA[d.via] || d.via}`);
+      }
+      renderTrace();
+      break;
+    }
+    case 'payment.executed':
+      if (call.started) callStep(e, `Paid ${usd(d.amount)} to ${d.merchant} with agent token ${d.token_id} (${d.reference})`);
+      break;
+    case 'offer.declined':
+      trace.declined = d;
+      renderTrace();
+      break;
+    case 'cutoff.detected':
+      callStep(e, `Spotted: ${d.place} desk closes ${clock(d.closes_at)}; you land ${clock(d.arrival)} and get there around ${clock(d.eta)}`);
+      break;
+    case 'call.started':
+      call.started = true;
+      callMode = d.mode || callMode;
+      $('mode').textContent = `call: ${callMode}`;
+      callStep(e, `Calling ${d.to} to ${d.purpose} (${d.mode === 'elevenlabs' ? 'live call, ElevenLabs + Twilio' : 'simulated clerk'})`);
+      clearTimeout(nudgeTimer);
+      if (d.mode === 'elevenlabs') nudgeTimer = setTimeout(() => nudge('No ring after 10 seconds? Play the recorded call.'), 10000);
+      break;
+    case 'call.completed':
+      clearTimeout(nudgeTimer);
+      call.waiting = false;
+      call.outcome = d.outcome || {};
+      call.transcript = d.transcript_url;
+      call.verified = !!d.verified;
+      if (call.outcome.error) nudge("The live call didn't start. Play the recorded call.");
+      else call.steps.push({ ts: e.ts, text: 'Call ended' });
+      renderCall();
+      break;
+    case 'demo.reset':
+      taskId = null;
+      resetPanels();
+      $('feed').innerHTML = '';
+      break;
+  }
+  addFeed(e);
+  if (LEDGER_EVENTS.includes(e.type)) refreshLedger();
+}
+
+// ---------- policy trace ----------
+
+function verdictChip(v) {
+  if (v === 'pick') return chip('good', '✓ Pick');
+  if (v === 'rejected') return chip('bad', '✕ Rejected');
+  return chip('neutral', 'OK');
+}
+
+function checkChip(result) {
+  if (result === 'allow') return chip('good', '✓ Allowed');
+  if (result === 'deny') return chip('bad', '✕ Denied');
+  return chip('ask', '? Ask the wearer');
+}
+
+function renderTrace() {
+  const c = trace.cancelled;
+  const offer = c && c.airline_offer;
+  let ctx = '';
+  if (c) {
+    ctx = `<strong>${esc(c.flight)} ${esc(c.route)} cancelled.</strong> ${esc(offer.airline)}'s own offer: ${esc(offer.flight)} at ${esc(clock(offer.departs))} ${esc(offer.day)}${offer.price_usd === 0 ? ', free' : ''}.`;
+    if (trace.declined) ctx += ` Turned it down, so the ${esc(usd(trace.declined.refund_usd))} refund is automatic (${esc(trace.declined.status)}).`;
+  } else if (!trace.options.length) {
+    ctx = '<span class="quiet">Waiting for a cancellation. Tap on the glasses, or press Simulate cancellation.</span>';
+  }
+  $('trace-context').innerHTML = ctx;
+
+  $('options').innerHTML = trace.options.length ? `
+    <thead><tr><th>Option</th><th>Departs → lands</th><th class="num">Price</th><th>Decision</th><th>Why</th></tr></thead>
+    <tbody>${trace.options.map((o) => `
+      <tr class="${esc(o.verdict)}">
+        <td class="opt">${esc(o.airline)} ${esc(o.flight)}</td>
+        <td class="when">${esc(clock(o.departs))} → ${esc(clock(o.arrives))} ${esc(o.day)}</td>
+        <td class="num">${esc(usd(o.price_usd))}</td>
+        <td>${verdictChip(o.verdict)}</td>
+        <td>${esc(o.reason)}</td>
+      </tr>`).join('')}</tbody>` : '';
+
+  $('checks').innerHTML = trace.checks.map((k) => {
+    let answer = '';
+    if (k.answer) answer = chip(k.answer.ok ? 'good' : 'bad', `${k.answer.ok ? '✓ Approved' : '✕ Declined'} on ${VIA[k.answer.via] || k.answer.via}`);
+    else if (k.result === 'ask') answer = chip('neutral', 'Waiting for the wearer');
+    const what = `${k.kind === 'booking' ? 'Booking' : k.kind === 'fee' ? 'Fee' : k.kind} ${usd(k.amount)}${k.merchant ? ` · ${k.merchant}` : ''}`;
+    return `<li>${checkChip(k.result)} <span class="what">${esc(what)}</span> <span>${esc(k.reason)}</span> ${answer}
+      <span class="quiet small">${esc(usd(k.remaining))} left before this spend</span></li>`;
+  }).join('') || '<li class="quiet">No spends checked yet.</li>';
+}
+
+// ---------- phone call ----------
+
+function renderCall() {
+  const o = call.outcome;
+  let status;
+  if (o && o.error) status = chip('bad', "✕ The call didn't start");
+  else if (o) status = o.held ? chip('good', '✓ Room held') : chip('bad', '✕ Room not held');
+  else if (call.waiting) status = chip('ask', '? Waiting for the wearer');
+  else if (call.started) status = chip('neutral', '● On the call');
+  else status = '<span class="quiet">No call yet. The agent calls after the flight is booked.</span>';
+  $('call-status').innerHTML = status;
+
+  $('call-steps').innerHTML = call.steps.map((s) => `<li><span class="t">${esc(time(s.ts))}</span>${esc(s.text)}</li>`).join('');
+
+  let out = '';
+  if (o && o.error) out = `<p class="small" style="color: var(--bad)">${esc(o.error)}</p>`;
+  else if (o) {
+    const link = /^https?:\/\//.test(call.transcript || '') ? `<p class="small"><a href="${esc(call.transcript)}" target="_blank" rel="noopener">Transcript</a></p>` : '';
+    out = `<dl>
+      <dt>Door code</dt><dd>${esc(o.door_code || '—')}</dd>
+      <dt>Contact</dt><dd>${esc(o.contact || '—')}</dd>
+      <dt>Fee agreed</dt><dd>${o.fee_usd != null ? esc(usd(o.fee_usd)) : '—'}</dd>
+      <dt>Checked against transcript</dt><dd>${call.verified ? chip('good', '✓ Verified') : chip('neutral', 'Not verified')}</dd>
+    </dl>${link}`;
+  }
+  $('call-outcome').innerHTML = out;
+}
+
+const rec = $('rec');
+$('play').addEventListener('click', () => (rec.paused ? rec.play() : rec.pause()));
+rec.addEventListener('play', () => { $('play').textContent = '❚❚ Pause recorded call'; $('play').classList.remove('nudge'); });
+rec.addEventListener('pause', () => { $('play').textContent = '▶ Play recorded call'; });
+rec.querySelector('source:last-of-type').addEventListener('error', () => {
+  $('rec-hint').textContent = 'Recording not found at dashboard/recorded-call.mp3. Pick it with "Other file…".';
+});
+$('recfile').addEventListener('change', (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  rec.src = URL.createObjectURL(f);
+  $('rec-hint').textContent = `Loaded ${f.name}`;
+});
+
+// ---------- ledger ----------
+
+async function refreshLedger() {
+  let l;
+  try { l = await (await fetch(API + '/ledger')).json(); } catch { return; }
+  const row = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${esc(v)}</td></tr>`;
+  $('left').innerHTML = `<span class="big">${esc(usd(l.remaining_usd))}</span> <span class="quiet">left of ${esc(usd(l.mandate.budget_usd))}</span>`;
+  $('ledger').innerHTML =
+    row('Budget', usd(l.mandate.budget_usd)) +
+    l.spends.map((s) => row(`${esc(s.merchant)} <span class="quiet">${esc(s.kind)}</span>`, usd(s.amount))).join('') +
+    l.refunds.map((r) => row(`${esc(r.airline)} refund <span class="quiet">${esc(r.status)}</span>`, `−${usd(r.amount)}`)).join('') +
+    row('Spent', usd(l.spent_usd), 'sum') +
+    row('Net cost after refunds', usd(l.net_cost_usd), 'sum') +
+    l.denied.map((d) => row(`${chip('bad', '✕ Denied')} ${esc(d.merchant)} <span class="quiet">${esc(d.reason)}</span>`, usd(d.amount))).join('');
+  $('consents').innerHTML = l.consents.map((c) =>
+    `<li>${c.approved ? chip('good', '✓ OK') : chip('bad', '✕ No')} ${esc(usd(c.amount))} ${esc(c.merchant)} <span class="quiet">on ${esc(VIA[c.gesture] || c.gesture)} · ${esc(time(c.ts))}</span></li>`
+  ).join('') || '<li class="quiet">None yet.</li>';
+  $('mandate').textContent = `"${l.mandate.instruction}" · Agent token ${l.mandate.token_id} · ${l.mandate.label}`;
+}
+
+// ---------- tests ----------
+
+async function refreshTests() {
+  const box = $('tests');
+  try {
+    const r = await fetch(API + '/tests', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const t = await r.json();
+    const cases = t.cases || [];
+    const total = t.total ?? cases.length;
+    const passed = t.passed ?? cases.filter((c) => c.passed).length;
+    const pct = total ? Math.round((100 * passed) / total) : 0;
+    box.innerHTML = `
+      <div><span class="big">${passed} / ${total}</span> <span class="quiet">passing · ${pct}%</span></div>
+      <div class="meter" role="img" aria-label="${passed} of ${total} tests passing"><span style="width: ${pct}%"></span></div>
+      <ul class="cases">${cases.map((c) => `<li>${c.passed ? chip('good', '✓ Pass') : chip('bad', '✕ Fail')} ${esc(c.name)}${c.detail ? `<div class="quiet small">${esc(c.detail)}</div>` : ''}</li>`).join('')}</ul>
+      ${t.ran_at ? `<div class="label">Ran at ${esc(time(t.ran_at))}</div>` : ''}`;
+  } catch {
+    box.innerHTML = '<p class="quiet small">Not exposed yet. Results show here once the engine serves <code>GET /tests</code>.</p>';
+  }
+}
+
+// ---------- activity feed ----------
+
 function summary(e) {
   const d = e.data || {};
   switch (e.type) {
-    case 'options.ranked': return d.options.map((o) => `${o.airline} $${o.price_usd}: ${o.verdict} (${o.reason})`).join(' · ');
-    case 'mandate.checked': return `<span class="${d.result === 'deny' ? 'deny' : 'allow'}">${d.result}</span> $${d.amount}: ${d.reason}`;
-    case 'payment.executed': return `$${d.amount} to ${d.merchant} · token ${d.token_id} · ${d.reference}`;
-    case 'hud.screen': return d.lines.join(' / ') || '(blank)';
+    case 'options.ranked': return (d.options || []).map((o) => `${o.airline} $${o.price_usd}: ${o.verdict}`).join(' · ');
+    case 'mandate.checked': return `${d.result} ${d.kind} ${usd(d.amount)}: ${d.reason}`;
+    case 'payment.executed': return `${usd(d.amount)} to ${d.merchant} · token ${d.token_id} · ${d.reference}`;
+    case 'hud.screen': return (d.lines || []).join(' / ') || '(blank)';
     case 'call.completed': return JSON.stringify(d.outcome);
     default: return Object.keys(d).length ? JSON.stringify(d) : '';
   }
@@ -95,41 +457,28 @@ function summary(e) {
 function addFeed(e) {
   if (e.type === 'state.snapshot') return;
   const li = document.createElement('li');
-  const t = new Date(e.ts).toLocaleTimeString();
-  li.innerHTML = `<span class="t">${t}</span><span class="type">${e.type}</span>${summary(e)}`;
+  li.innerHTML = `<span class="t">${esc(time(e.ts))}</span><span class="type">${esc(e.type)}</span>${esc(summary(e))}`;
   $('feed').prepend(li);
+  while ($('feed').children.length > 200) $('feed').lastChild.remove();
 }
 
-async function refreshLedger() {
-  const l = await (await fetch(API + '/ledger')).json();
-  const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
-  $('ledger').innerHTML =
-    row('Budget', `$${l.mandate.budget_usd}`) +
-    l.spends.map((s) => row(`${s.merchant} (${s.kind})`, `$${s.amount}`)).join('') +
-    l.refunds.map((r) => row(`${r.airline} refund, ${r.status}`, `−$${r.amount}`)).join('') +
-    row('Spent', `$${l.spent_usd}`) + row('Left', `$${l.remaining_usd}`) + row('Net cost', `$${l.net_cost_usd}`) +
-    row('Consent records', l.consents.length) +
-    l.denied.map((d) => row(`<span class="deny">Denied: ${d.merchant}</span>`, `$${d.amount}`)).join('');
-  $('mandate').textContent = `"${l.mandate.instruction}" · ${l.mandate.label}`;
-}
+// ---------- wiring ----------
 
 function connect() {
   const es = new EventSource(API + '/events');
   es.onopen = () => { $('conn').textContent = 'live'; };
   es.onerror = () => { $('conn').textContent = 'reconnecting…'; };
-  es.onmessage = (msg) => {
-    const e = JSON.parse(msg.data);
-    if (e.type === 'hud.screen') renderScreen(e.data);
-    if (e.type === 'demo.reset') $('feed').innerHTML = '';
-    addFeed(e);
-    if (['state.snapshot', 'payment.executed', 'mandate.checked', 'offer.declined', 'approval.granted', 'approval.rejected', 'demo.reset'].includes(e.type)) refreshLedger();
-  };
+  es.onmessage = (msg) => handle(JSON.parse(msg.data));
 }
 
 document.querySelectorAll('.gestures button').forEach((b) => b.addEventListener('click', () => post('/input', { gesture: b.dataset.g })));
 $('simulate').addEventListener('click', () => post('/simulate/cancel'));
 $('reset').addEventListener('click', () => post('/demo/reset'));
+$('tests-refresh').addEventListener('click', refreshTests);
+resetPanels();
 connect();
+refreshTests();
+setInterval(refreshTests, 60000);
 </script>
 </body>
 </html>
