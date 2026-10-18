@@ -22,7 +22,7 @@ Clerk: ..."), Claude checks the outcome against it; a door code reaches the glas
 | `GET /vault` | Dashboard, orchestrator agent | `{items: [{id, type, title, saved_at, source, data}]}`. Pre-seeded with the UA183 boarding pass and the guesthouse confirmation (`source: "traveler"`); the flow adds the new boarding pass and the call transcript with its checked outcome (`source: "agent"`). Reset restores the pre-seeded items. Also in `state.snapshot` as `vault` |
 | `GET /ledger` | Dashboard | Mandate, spends, refunds, consent records, denied attempts, remaining budget |
 | `POST /mandate` | Phone, after the passkey sign-in | Mandate fields to override → the mandate |
-| `GET /flights/search` | Anyone | Mock options, ranked by the policy engine |
+| `GET /flights/search` | Anyone | Tonight's options ranked by the policy engine → `{options, source, error}`: live Duffel fares when `FLIGHTS_MODE=duffel` (plus the airline's own rebooking), else mock; `source` says which |
 | `GET /tests` | Dashboard | Last `python test_engine.py` run: `{ran_at, passed, total, cases: [{name, passed, detail}]}`; 404 until tests have run |
 | `GET /` | Browser | The dashboard |
 | `GET /dashboard/{file}` | Browser | Other files in `dashboard/`, e.g. `recorded-call.mp3` |

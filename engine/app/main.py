@@ -13,17 +13,17 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import call, policy, verify, voice
-from . import call, policy, tap, verify
+from . import call, flights, policy, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +96,11 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def fit(line: str, short: str) -> str:
+    """Glasses lines are at most 24 chars: long live airline names fall back to the flight number."""
+    return line if len(line) <= 24 else short
+
+
 def hhmm(t: str, ampm: bool = True) -> str:
     h, m = (int(x) for x in t.split(":"))
     clock = f"{h % 12 or 12}:{m:02d}"
@@ -139,15 +144,36 @@ def snapshot() -> dict:
 
 async def start_flow(source: str) -> None:
     S.task_id = f"task-{uuid.uuid4().hex[:8]}"
-    S.stage = "cancelled"
+    S.stage = "searching"
     b, offer = MOCK["booking"], MOCK["airline_offer"]
     await publish("flight.cancelled", {"flight": b["flight"], "route": f"{b['from']}-{b['to']}",
                                        "airline_offer": offer, "source": source})
-    S.options = policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])
+    await show("searching", [f"{b['flight']} cancelled", "Finding flights..."])
+    options, source, error = await find_options(b)
+    S.options = policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"])
     S.pick = next((o for o in S.options if o["verdict"] == "pick"), None)
-    await publish("options.ranked", {"options": S.options})
+    await publish("options.ranked", {"options": S.options, "source": source, "error": error})
     await show("cancelled", [f"{b['flight']} cancelled", f"{offer['airline']}: {hhmm(offer['departs'])} tmrw", "Tap = fix it"],
                {"press": "fix"})
+    S.stage = "cancelled"
+
+
+# ponytail: fixed PDT offset (the demo is in LA in October); zoneinfo if it ever runs elsewhere.
+LA = timezone(timedelta(hours=-7))
+
+
+async def find_options(b: dict) -> tuple[list[dict], str, str | None]:
+    """The airline's free rebooking plus live Duffel fares for tonight; mock fares if Duffel is off or fails."""
+    if not flights.enabled():
+        return MOCK["options"], "mock", None
+    now_la = datetime.now(LA)
+    try:
+        live = await flights.search(b["from"], b["to"], now_la.date().isoformat())
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError, IndexError) as e:
+        return MOCK["options"], "mock", f"duffel: {e}"[:300]
+    if not flights.test_mode():  # test-mode schedules are made up, so only drop gone flights for live fares
+        live = [o for o in live if o["departs"] > now_la.strftime("%H:%M")]
+    return [MOCK["options"][0], *live], "duffel", None
 
 
 async def offer_pick() -> dict | None:
@@ -159,7 +185,8 @@ async def offer_pick() -> dict | None:
     return await request_spend(
         "booking", p["price_usd"], p["airline"], p["mcc"], f"{p['airline']} {p['flight']} tonight",
         screen=("booking_offer",
-                [f"{p['airline']} tonight {hhmm(p['departs'])}", f"${p['price_usd']} · lands {hhmm(p['arrives'], False)}", "Hold to book"],
+                [fit(f"{p['airline']} tonight {hhmm(p['departs'])}", f"{p['flight']} tonight {hhmm(p['departs'])}"),
+                 f"${p['price_usd']} · lands {hhmm(p['arrives'], False)}", "Hold to book"],
                 {"hold": "approve", "swipe_down": "other"}),
     )
 
@@ -240,6 +267,16 @@ async def after_answer(a: dict) -> None:
             run_later(mock_call_finish(a["status"] == "approved"))
 
 
+async def book_pick(p: dict) -> dict:
+    """A real Duffel order for a live fare; mock fares (or a failed order) get none."""
+    if p.get("source") != "duffel":
+        return {"source": "mock", "order_id": None, "pnr": None}
+    try:
+        return await flights.book(p)
+    except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as e:
+        return {"source": "duffel", "order_id": None, "pnr": None, "error": f"{e}"[:300]}
+
+
 async def after_booking() -> None:
     p, offer, lodging = S.pick, MOCK["airline_offer"], MOCK["lodging"]
     S.stage = "booked"
@@ -250,11 +287,14 @@ async def after_booking() -> None:
                                      "refund_usd": refund["amount_usd"], "status": "pending"})
     paid = next((s for s in reversed(S.ledger.spends) if s["kind"] == "booking"), {})
     b = MOCK["booking"]
+    order = await book_pick(p)
+    await publish("flight.booked", {"airline": p["airline"], "flight": p["flight"], **order})
     await save_to_vault("boarding_pass", f"{p['airline']} {p['flight']} {b['from']}-{b['to']}", {
         "airline": p["airline"], "flight": p["flight"], "from": b["from"], "to": b["to"], "date": b["date"],
         "departs": p["departs"], "arrives": p["arrives"], "price_usd": p["price_usd"],
-        "payment_reference": paid.get("reference"), "replaces": b["flight"]})
-    await show("booked", ["Booked · pass saved"])
+        "payment_reference": paid.get("reference"), "replaces": b["flight"],
+        "pnr": order.get("pnr"), "order_id": order.get("order_id"), "booked_via": order["source"]})
+    await show("booked", [f"Booked · PNR {order['pnr']}", "Pass saved"] if order.get("pnr") else ["Booked · pass saved"])
     await asyncio.sleep(1.5)
     eta = policy.arrival_eta(p["arrives"], lodging["travel_minutes_from_airport"])
     await publish("cutoff.detected", {"place": lodging["name"], "closes_at": lodging["desk_closes"],
@@ -392,7 +432,7 @@ async def input_(g: Gesture):
         if not a:
             return {"handled": False, "stage": stage}
         if stage == "offer" and gesture == "swipe_down":
-            await show("only_option", ["Only option tonight", f"{S.pick['airline']} {hhmm(S.pick['departs'])}", "Hold to book"],
+            await show("only_option", ["Only option tonight", fit(f"{S.pick['airline']} {hhmm(S.pick['departs'])}", f"{S.pick['flight']} {hhmm(S.pick['departs'])}"), "Hold to book"],
                        {"hold": "approve"})
         else:
             await answer(a["approval_id"], gesture == "hold", "glasses")
@@ -631,8 +671,10 @@ def set_mandate(fields: dict):
 
 
 @app.get("/flights/search")
-def flights_search():
-    return {"options": policy.rank_options(MOCK["options"], S.mandate, S.ledger, MOCK["deadline"])}
+async def flights_search():
+    options, source, error = await find_options(MOCK["booking"])
+    return {"options": policy.rank_options(options, S.mandate, S.ledger, MOCK["deadline"]),
+            "source": source, "error": error}
 
 
 @app.get("/tests")

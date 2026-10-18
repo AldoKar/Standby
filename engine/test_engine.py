@@ -8,6 +8,7 @@ os.environ.setdefault("MOCK_CALL_END_S", "0.2")
 # Never place real calls from the tests, even if engine/.env says CALL_MODE=elevenlabs
 # (app/__init__ loads .env, but variables already set here win).
 os.environ["CALL_MODE"] = "mock"
+os.environ["FLIGHTS_MODE"] = "mock"  # nor real flight orders
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -369,6 +370,46 @@ def test_real_call_fee_screen(c):
         c.post("/demo/reset")
 
 
+def test_live_flights(c):
+    """FLIGHTS_MODE=duffel: live fares are ranked with the airline's offer, the booking creates an
+    order and its PNR reaches the glasses and the Vault; a Duffel error falls back to mock fares.
+    No network: flights.search/book are stubbed."""
+    from app import flights
+
+    live = {"id": "off_1", "offer_id": "off_1", "source": "duffel", "airline": "Duffel Airways", "flight": "ZZ100",
+            "departs": "23:58", "arrives": "23:59", "day": "today", "stops": 0, "price_usd": 120,
+            "currency": "USD", "total_amount": "120.00", "passenger_id": "pas_1", "mcc": "4511"}
+
+    async def search(*_):
+        return [live]
+
+    async def book(option):
+        assert option["offer_id"] == "off_1"
+        return {"order_id": "ord_1", "pnr": "X7K2QZ", "source": "duffel"}
+
+    async def broken(*_):
+        raise RuntimeError("duffel 500: down")
+    real = (flights.enabled, flights.search, flights.book)
+    flights.enabled, flights.search, flights.book = (lambda: True), search, book
+    try:
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        s = c.get("/state").json()
+        assert [o["verdict"] for o in s["options"]] == ["rejected", "pick"] and s["pick"]["flight"] == "ZZ100"
+        c.post("/input", json={"gesture": "press"})
+        c.post("/input", json={"gesture": "hold"})
+        wait_for(c, "calling")
+        assert c.get("/vault").json()["items"][2]["data"]["pnr"] == "X7K2QZ"
+
+        flights.search = broken
+        c.post("/demo/reset")
+        c.post("/input", json={"gesture": "press"})
+        assert c.get("/state").json()["pick"]["flight"] == "DL1946"
+    finally:
+        flights.enabled, flights.search, flights.book = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -384,6 +425,7 @@ CASES = [
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
     ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
+    ("Live flights: Duffel fares, real order PNR, mock fallback", test_live_flights),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 

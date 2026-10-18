@@ -13,11 +13,12 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 | `state.snapshot` | First message after connecting | Full state, same as `GET /state` |
 | `hud.screen` | The glasses should show something new | `screen_id`, `lines` (at most 3), `gestures`, `clear_after_s` |
 | `flight.cancelled` | The flow starts | `flight`, `route`, `airline_offer`, `source` |
-| `options.ranked` | The policy engine has filtered the options | `options[]`, each with `verdict` (pick, ok, rejected) and `reason` |
+| `options.ranked` | The policy engine has filtered the options | `options[]`, each with `verdict` (pick, ok, rejected) and `reason`; `source` (`duffel` = live fares, `mock`), `error` (why Duffel fell back to mock, else null). Live options also carry `offer_id`, `stops`, `currency` |
 | `mandate.checked` | Any spend is checked | `kind`, `amount`, `remaining`, `result` (allow, ask, deny), `reason` |
 | `approval.requested` | A spend needs the wearer's OK | `approval_id`, `kind` (booking, fee), `amount`, `merchant`, `reason` |
 | `approval.granted` / `approval.rejected` | The wearer or ASI:One answered | `approval_id`, `kind`, `via` (glasses, asi1, api) |
 | `payment.executed` | A spend went through (simulated) | `amount`, `merchant`, `mcc`, `token_id`, `reference`, `signature` (`keyid`, `tag`, `verified`: the TAP-style signed request the merchant checked) |
+| `flight.booked` | The booking went through after the wearer approved it | `airline`, `flight`, `source` (`duffel`, `mock`), `order_id`, `pnr` (null for mock fares), `error`? (the Duffel order failed) |
 | `offer.declined` | The airline's own rebooking is turned down | `airline`, `flight`, `refund_usd`, `status` |
 | `vault.updated` | Something was saved to the Vault | `type` (boarding_pass, call_transcript), `id`, `title`. The item itself is in `GET /vault` |
 | `cutoff.detected` | The agent spots a downstream problem | `place`, `closes_at`, `arrival`, `eta` |
@@ -43,4 +44,4 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 - `clear_after_s`: blank the screen after this many seconds; `null` keeps it.
 - An empty `lines` array means a blank screen.
 
-The demo flow's screen ids, in order: `ready`, `cancelled`, `booking_offer`, `booked`, `calling`, `fee_request`, `resolved`. Other screens that can appear: `only_option` (swipe down on the booking offer), `no_option` (no flight fits: "No flight tonight / fits your budget"), `denied` (a spend broke the mandate), `call_resumed` (the wearer answered the fee and the call goes on: "+$40 OK / Finishing the call" or "Fee declined / Finishing the call"; replaced by the outcome when the call ends), `call_failed` (the call never connected: "Call didn't connect / Details on your phone"), `not_held` (the call ended without holding the room: "Room not held / Details on your phone"; the stage is still `resolved`) and `idle` (blank, shown for a moment when a finished task is dismissed, before `ready`).
+The demo flow's screen ids, in order: `ready`, `searching` ("UA183 cancelled / Finding flights...", gestures ignored), `cancelled`, `booking_offer`, `booked` ("Booked · PNR X7K2QZ / Pass saved" for a live Duffel order, else "Booked · pass saved"), `calling`, `fee_request`, `resolved`. Other screens that can appear: `only_option` (swipe down on the booking offer), `no_option` (no flight fits: "No flight tonight / fits your budget"), `denied` (a spend broke the mandate), `call_resumed` (the wearer answered the fee and the call goes on: "+$40 OK / Finishing the call" or "Fee declined / Finishing the call"; replaced by the outcome when the call ends), `call_failed` (the call never connected: "Call didn't connect / Details on your phone"), `not_held` (the call ended without holding the room: "Room not held / Details on your phone"; the stage is still `resolved`) and `idle` (blank, shown for a moment when a finished task is dismissed, before `ready`).
