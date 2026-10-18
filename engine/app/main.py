@@ -77,7 +77,6 @@ class State:
         self.cursor = 0  # which of them is highlighted
         self.pick: dict | None = None
         self.approvals: dict[str, dict] = {}
-        self.fee_allowance = 0.0
         self.outcome: dict | None = None
         self.screen: dict = ready_screen()
         self.vault: list[dict] = seed_vault()
@@ -302,7 +301,7 @@ def propose_limit(amount: float | None = None, reason: str | None = None, by: st
     if not reason:
         span = f"${low:g}-${high:g}" if high > low else f"${low:g}"
         reason = (f"Flights that get you there tonight run {span}; ${limit:g} covers the flight plus fees on the way. "
-                  f"I'll ask before anything over ${S.mandate.ask_over_usd:g}.")
+                  "I'll ask you before every spend.")
     return {"limit_usd": limit, "ask_over_usd": S.mandate.ask_over_usd, "fares_usd": [low, high],
             "reason": reason[:400], "proposed_by": by}
 
@@ -323,7 +322,7 @@ async def accept_limit(via: str) -> None:
             keep.update({k: v for k, v in picked.items() if k in ("chosen_by", "agent_reason")})
         S.pick = keep or next((o for o in S.options if o["verdict"] == "pick"), None)
     S.mandate.instruction = (f"Get me to SF tonight. Up to ${limit:g} total. "
-                             f"Ask me before any spend over ${S.mandate.ask_over_usd:g}.")
+                             "Ask me before every spend.")
     await publish("mandate.set", {"budget_usd": limit, "ask_over_usd": S.mandate.ask_over_usd, "via": via,
                                   "reason": S.proposal["reason"], "proposed_by": S.proposal["proposed_by"]})
 
@@ -536,19 +535,10 @@ async def offer_pick() -> dict | None:
     )
 
 
-def asi1_flow() -> bool:
-    """The task came from ASI:One (POST /tasks): its own rules, incl. the fee allowance set at booking."""
-    return S.flow_source == "asi1"
-
-
 async def request_spend(kind: str, amount: float, merchant: str, mcc: str, reason: str, screen: tuple) -> dict:
-    """One path for every spend: mandate check, then pay silently, deny, or ask the wearer.
-    On the glasses (any flow but ASI:One) nothing is paid silently: no fee allowance, no "under $25" pass;
-    every spend the mandate allows is asked on the glasses. The mandate can still deny."""
-    allowance = S.fee_allowance if kind == "fee" and asi1_flow() else 0
-    decision, why, line = policy.check_spend(S.mandate, S.ledger, amount, mcc, allowance)
-    if decision == "allow" and not asi1_flow():
-        decision, why = "ask", f"{why.split(';')[0]}; on the glasses every spend is asked"
+    """One path for every spend: the mandate denies it, or the traveler is asked. Nothing is ever paid
+    without an OK (glasses, ASI:One or the dashboard): no "under $X" pass, no fee allowance."""
+    decision, why, line = policy.check_spend(S.mandate, S.ledger, amount, mcc)
     await publish("mandate.checked", {"kind": kind, "amount": amount, "remaining": S.ledger.remaining(S.mandate),
                                       "result": decision, "reason": why})
     a = {"approval_id": f"apr-{uuid.uuid4().hex[:8]}", "task_id": S.task_id, "kind": kind, "amount": amount,
@@ -558,11 +548,6 @@ async def request_spend(kind: str, amount: float, merchant: str, mcc: str, reaso
         a["status"] = "denied"
         S.ledger.denied.append({"amount": amount, "merchant": merchant, "reason": why, "ts": now()})
         await show("denied", [f"${amount:g} {reason}"[:24], line, "Confirm on phone"], {}, 8)
-        await after_answer(a)
-        return a
-    if decision == "allow":
-        a["status"] = "approved"
-        await pay(a)
         await after_answer(a)
         return a
     await publish("approval.requested", {k: a[k] for k in ("approval_id", "kind", "amount", "merchant", "reason")})
@@ -1200,8 +1185,7 @@ class ApprovalBody(BaseModel):
 
 @app.post("/approval")
 async def approval(body: ApprovalBody):
-    if body.fee_allowance_usd is not None and asi1_flow():  # the glasses always ask: no allowance there
-        S.fee_allowance = body.fee_allowance_usd
+    # fee_allowance_usd is accepted for compatibility (ASI:One still sends it) and ignored: every fee is asked.
     a = S.approvals.get(body.approval_id) if body.approval_id else pending()
     if not a:
         raise HTTPException(404, "no pending approval")
@@ -1297,13 +1281,11 @@ async def merchant_payment(p: PaymentRequest):
     if covered:
         covered["charged"] = True
         return {"paid": True, "token_id": S.mandate.token_id, "reason": f"covered by {covered['approval_id']}"}
+    # Not approved by the traveler: refused, whatever the amount (nothing is paid without an OK).
     decision, why, _ = policy.check_spend(S.mandate, S.ledger, p.amount, p.mcc)
-    if decision != "allow":
-        why = why if decision == "deny" else "needs the wearer's approval first"
-        S.ledger.denied.append({"amount": p.amount, "merchant": p.merchant, "reason": why, "ts": now()})
-        raise HTTPException(403, why)
-    await pay({"amount": p.amount, "merchant": p.merchant, "mcc": p.mcc, "kind": "merchant"})
-    return {"paid": True, "token_id": S.mandate.token_id, "reason": why}
+    why = why if decision == "deny" else "needs the traveler's approval first"
+    S.ledger.denied.append({"amount": p.amount, "merchant": p.merchant, "reason": why, "ts": now()})
+    raise HTTPException(403, why)
 
 
 @app.get(tap.DIRECTORY_PATH)

@@ -76,7 +76,7 @@
     "contact": "Maria"
   },
   "mandate": {
-    "instruction": "Get me to SF tonight. Up to $300 total. Ask me before any spend over $25.",
+    "instruction": "Get me to SF tonight. Up to $300 total. Ask me before every spend.",
     "budget_usd": 300,
     "ask_over_usd": 25,
     "allowed_mcc": ["3000-3299", "4511", "7011"],

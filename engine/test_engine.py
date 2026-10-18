@@ -59,6 +59,11 @@ def test_asi1_flow_with_fee_allowance(c):
     r = c.post("/tasks", json={"source": "asi1"}).json()
     assert r["pick"]["airline"] == "Delta" and r["approval_id"]
     c.post("/approval", json={"approval_id": r["approval_id"], "approved": True, "fee_allowance_usd": 50})
+    # the allowance ASI:One sends is ignored: the $40 fee waits for the traveler like any spend
+    s = wait_for(c, "fee")
+    fee = next(a for a in s["approvals"] if a["kind"] == "fee")
+    assert fee["status"] == "pending" and c.get("/ledger").json()["spent_usd"] == 215
+    c.post("/approval", json={"approval_id": fee["approval_id"], "approved": True})
     s = wait_for(c, "resolved")
     assert s["outcome"]["door_code"] == "4417"
 
@@ -72,7 +77,7 @@ def test_policy_denies_over_budget(c):
     r = c.post("/call/approval", json={"amount": 90, "reason": "late fee"}).json()
     assert r["status"] == "denied"  # $90 > $85 left
     small = c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()
-    assert small["status"] == "approved"  # under the $25 ask limit
+    assert small["status"] == "pending"  # small fees are asked too: nothing is paid without an OK
 
 
 def test_policy_hostile_cases(c):
@@ -110,29 +115,26 @@ def test_policy_hostile_cases(c):
     c.post("/demo/reset")
 
 
-def test_glasses_always_ask(c):
-    """On the glasses every fee is asked: a fee allowance (an ASI:One feature) is ignored there, and so is the
-    silent "under $25" pass. ASI:One keeps both. The mandate still denies what it denies."""
+def test_never_paid_without_ok(c):
+    """Nothing is paid without the traveler's OK, in any flow (glasses, dashboard, ASI:One): no silent pass
+    under a small amount and no fee allowance. The mandate still denies what it denies."""
     from app import main as engine
     fee = lambda amount: c.post("/call/approval", json={"amount": amount, "reason": "late check-in"}).json()  # noqa: E731
-    # glasses flow, $40 fee, an allowance of $50 sent anyway: still asked, nothing paid
+    for start in ("glasses", "simulate", "asi1"):
+        c.post("/demo/reset")
+        engine.S.flow_source = start
+        for amount in (5, 20, 40):
+            assert fee(amount)["status"] == "pending", (start, amount)
+        assert c.get("/state").json()["screen"]["screen_id"] == "fee_request"
+        assert c.get("/ledger").json()["spends"] == [], start
+    # an allowance sent with an approval (ASI:One's review card) changes nothing
     c.post("/demo/reset")
-    c.post("/input", json={"gesture": "press"})  # started on the glasses
-    assert engine.S.flow_source == "glasses"
-    engine.S.fee_allowance = 50
-    r = fee(40)
-    assert r["status"] == "pending" and c.get("/state").json()["screen"]["screen_id"] == "fee_request"
-    assert c.get("/ledger").json()["spends"] == []
-    # /approval can't set an allowance on the glasses flow
+    r = c.post("/tasks", json={"source": "asi1"}).json()
+    c.post("/approval", json={"approval_id": r["approval_id"], "approved": True, "fee_allowance_usd": 500})
+    assert fee(40)["status"] == "pending"
+    # the mandate still refuses: outside the merchant categories
     c.post("/demo/reset")
-    c.post("/input", json={"gesture": "press"})
-    c.post("/approval", json={"approved": False, "fee_allowance_usd": 50})
-    assert engine.S.fee_allowance == 0
-    # ASI:One: the allowance set at booking still lets a $40 fee through, and $20 is under the ask limit
-    c.post("/demo/reset")
-    engine.S.flow_source = "asi1"
-    engine.S.fee_allowance = 50
-    assert fee(40)["status"] == "approved" and fee(20)["status"] == "approved"
+    assert c.post("/call/approval", json={"amount": 10, "merchant": "Diner", "mcc": "5812"}).json()["status"] == "denied"
     c.post("/demo/reset")
 
 
@@ -140,13 +142,12 @@ def test_merchant_payment_request(c):
     c.post("/demo/reset")
     charge = lambda amount, mcc="7011": c.post("/merchant/payment-request",
                                               json={"merchant": "Guesthouse", "amount": amount, "mcc": mcc})
-    # small charge: allowed silently and logged
-    assert charge(10).status_code == 200
-    assert [s["amount"] for s in c.get("/ledger").json()["spends"]] == [10]
-    # over the ask limit with no approval, or outside the mandate: refused and logged
+    # a charge nobody approved is refused and logged, however small; outside the mandate too
+    assert charge(10).status_code == 403
     assert charge(40).status_code == 403
     assert charge(10, mcc="5812").status_code == 403
-    assert len(c.get("/ledger").json()["denied"]) == 2
+    led = c.get("/ledger").json()
+    assert led["spends"] == [] and len(led["denied"]) == 3
 
     # an approved booking can be charged exactly once, without counting it twice against the budget
     c.post("/demo/reset")
@@ -949,7 +950,7 @@ CASES = [
     ("ASI:One flow with fee allowance", test_asi1_flow_with_fee_allowance),
     ("#2 Big fee ($90) denied, #9 small fee allowed", test_policy_denies_over_budget),
     ("#8 Over-budget flight, bad amounts, wrong merchant, expired mandate", test_policy_hostile_cases),
-    ("Glasses always ask for fees; ASI:One keeps its allowance", test_glasses_always_ask),
+    ("Nothing is paid without an OK, in any flow", test_never_paid_without_ok),
     ("Merchant charges: logged, once per approval", test_merchant_payment_request),
     ("#5/#6 Call outcome checked against transcript", test_call_outcome_verification),
     ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),

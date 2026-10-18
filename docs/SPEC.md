@@ -65,9 +65,9 @@ Every spend goes through one mandate, checked in code (`engine/app/policy.py`). 
 
 | Field | Value |
 |---|---|
-| Instruction | "Get me to SF tonight. Up to $300 total. Ask me before any spend over $25." |
+| Instruction | "Get me to SF tonight. Up to $300 total. Ask me before every spend." |
 | Budget | $300 total, counted across every spend |
-| Ask threshold | On the glasses every spend is asked, whatever the amount (no silent pass, no fee allowance). ASI:One keeps "over $25 asks; $25 or less goes through silently and is logged" |
+| Ask threshold | None: every spend is asked, whatever the amount and wherever it comes from (glasses, dashboard, ASI:One). No silent pass, no fee allowance. The mandate only decides what is refused |
 | Allowed merchants | Airlines (MCC 3000–3299, 4511) and lodging (MCC 7011) |
 | Expiry | 48 hours |
 | Credential | An agent-specific token ID bound to this mandate |
@@ -102,7 +102,7 @@ See `agents/README.md`. The whole flow also runs inside one ASI:One chat with no
 5. The orchestrator hires and pays the Caller, and the phone on the table rings.
 6. A result card shows the outcome, a transcript summary and the mandate ledger.
 
-In chat, the fee is covered by the allowance set on the review card; live mid-call approval is a glasses feature.
+Every fee is asked live, including in chat: the allowance on ASI:One's review card no longer pays anything by itself.
 
 ## Contract
 
@@ -122,7 +122,7 @@ The shared contract is in `contract/`: `events.md` (every event and the `hud.scr
 | 6 | Retracted code | "Door code is... actually, never mind." | No door code shown; outcome unverified |
 | 7 | Voicemail | Nobody answers | Caller retries once or leaves a voicemail, then tells the user |
 | 8 | Over-budget flight | LLM proposes the $319 flight | Policy rejects it, with the reason in the trace |
-| 9 | Small fee | $20 | On the glasses: asked like any fee, paid only after the gesture. ASI:One: goes through silently and is logged |
+| 9 | Small fee | $20 | Asked like any fee, paid only after the traveler's OK |
 
 ## Build plan
 

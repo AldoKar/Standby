@@ -92,8 +92,9 @@ class Ledger:
         }
 
 
-def check_spend(m: Mandate, ledger: Ledger, amount: float, mcc: str, fee_allowance: float = 0) -> tuple[str, str, str]:
-    """Return (decision, reason, glasses_line). decision is allow, ask or deny.
+def check_spend(m: Mandate, ledger: Ledger, amount: float, mcc: str) -> tuple[str, str, str]:
+    """Return (decision, reason, glasses_line). decision is ask or deny: nothing is ever paid without the
+    traveler's OK (no "under $X" pass, no fee allowance). The mandate only decides what is refused.
     glasses_line is the short (<= 24 chars) cause shown on the denied screen; empty unless denied."""
     if not amount > 0:  # a negative "spend" would grow the budget; also catches NaN
         return "deny", f"${amount:g} is not a valid amount; deny", "Invalid amount"
@@ -104,11 +105,7 @@ def check_spend(m: Mandate, ledger: Ledger, amount: float, mcc: str, fee_allowan
     left = ledger.remaining(m)
     if amount > left:
         return "deny", f"${amount:g} > ${left:g} left; deny, confirm on phone", "Over your budget"
-    if amount <= m.ask_over_usd:
-        return "allow", f"${amount:g} is within the ${m.ask_over_usd:g} ask limit; allowed silently", ""
-    if fee_allowance and amount <= fee_allowance:
-        return "allow", f"${amount:g} is within the ${fee_allowance:g} fee allowance set at booking", ""
-    return "ask", f"${amount:g} > ${m.ask_over_usd:g} ask limit; ask the wearer", ""
+    return "ask", f"${amount:g} fits the mandate; ask the traveler (every spend is asked)", ""
 
 
 def rank_options(options: list[dict], m: Mandate, ledger: Ledger, deadline: dict) -> list[dict]:
