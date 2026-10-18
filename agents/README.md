@@ -108,21 +108,38 @@ it through a tool.
       call outcome, as two separate `ChatMessage`s. Verified agent-to-agent over the real
       transport; confirm the asi1.ai UI renders both when you run step 2 above.
 - [x] `EndSessionContent` is sent only with the final result, never earlier
-- [x] Innovation Lab + hackathon badges, and a search-style description, published from
-      `orchestrator/README.md` via the agent's `readme_path`
+- [ ] Innovation Lab + hackathon badges and a search-style description — `readme_path` and
+      `description` on the constructor do **not** publish to the Agentverse profile for a
+      mailbox agent. Paste `orchestrator/README.md` into the profile's Agent Guide by hand.
 - [ ] ASI:One finds the agent by plain-language query (needs a real chat to confirm)
-- [ ] Interactive Cards for the options, the review step and the result (text works today)
+- [x] Interactive Cards: options carousel, review card with Approve and the fee allowance,
+      terminal result card — built and structurally validated. Text rides above every card
+      and is what shows if ASI:One rejects one. **Needs one asi1.ai run to confirm rendering.**
 - [ ] Caller agent paid through the Payment Protocol, with a retry-on-voicemail path
 - [ ] Shared chat URL pasted into the table above
 
-## What's left
+## Interactive Cards
 
-**Interactive Cards.** The flow is text today, which is the fallback the spec asks for.
-Cards are `MetadataContent` blocks on the `ChatMessage` carrying `card_protocol_version`,
-`requires_card_interaction`, `card_kind` (`carousel` for the options, `review` for the
-approval, `detail` for the result) and a JSON-stringified `card_payload`. The selection
-comes back either as a JSON string or as prose, so parsing needs `json.loads` first and a
-prose fallback.
+Each card is a `MetadataContent` block sent alongside the `TextContent`, so a client that
+cannot render cards still gets the full answer — and if ASI:One rejects a payload it
+silently falls back to that same text. Nothing is lost either way.
+
+| Card | Kind | When |
+|---|---|---|
+| Options | `carousel` | After `get_booking` / `search_flights`. The pick is badged **Recommended** and is the only item with a button; the two the policy ruled out carry their reason in the subtitle and no CTA, which is this surface's version of struck through. |
+| Review | `review` | After `request_approval`. Flight, departure, arrival, price, budget left afterwards, fee allowance; **Approve $215** and **No, not this one**. |
+| Result | `review`, terminal | When the task resolves. Room, door code, who was spoken to, fee, spent, refund pending. Not interactive. |
+
+A button press arrives as a JSON selection string (`{"action": "approve", …}`).
+`as_instruction()` turns it into the sentence the traveller would have typed, so card taps
+and typed replies run down exactly the same path — which is why the text flow stays a true
+fallback rather than a second code path that can rot.
+
+Cards are chosen in Python from engine state, never by the model, so a card can't quote a
+number the engine didn't produce. The first card requested in a turn wins, so a turn that
+loads the booking *and* the approval still shows the carousel first.
+
+## What's left
 
 **Caller agent.** `caller/agent.py` is still the skeleton. Two things to settle first:
 the engine has no agent-facing endpoint to start a call (raised in `NEEDS.md`), and the
