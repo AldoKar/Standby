@@ -6,7 +6,7 @@ Base URL: the engine (locally `http://localhost:8000`). All bodies are JSON, and
 |---|---|---|
 | `GET /events` | Glasses, dashboard | SSE stream (see `events.md`) |
 | `GET /state` | Anyone (debugging) | Full state snapshot |
-| `POST /input` | Glasses | `{"gesture", "screen_id"?}`, gesture is `press`, `hold` or `swipe_down` → `{"handled", "stage"}` |
+| `POST /input` | Glasses | `{"gesture", "screen_id"?}`, gesture is `press`, `hold` or `swipe_down` → `{"handled", "stage", "reason"?}`. If `screen_id` is sent and isn't the screen currently shown, the gesture is ignored (`handled: false`, `reason: "stale screen: ..."`), so a late gesture can't approve a different spend. Without `screen_id` (dashboard buttons) every gesture is accepted as before |
 | `POST /simulate/cancel` | Dashboard | Starts the flow, same as a press on the Ready screen |
 | `POST /demo/reset` | Dashboard | Back to the Ready screen |
 | `POST /tasks` | Orchestrator agent (ASI:One) | `{"source": "asi1"}` → `{task_id, stage, options, pick, approval_id}`. Starts the flow and goes straight to the booking approval |
@@ -27,5 +27,5 @@ Clerk: ..."), Claude checks the outcome against it; a door code reaches the glas
 
 ## Rules
 
-- Spending decisions happen only in `backend/app/policy.py`, never in an LLM prompt.
+- Spending decisions happen only in `engine/app/policy.py`, never in an LLM prompt.
 - To change the contract (an event, a field, an endpoint), open a PR that edits this folder, and tell the team in chat.

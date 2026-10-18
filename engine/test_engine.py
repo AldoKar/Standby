@@ -225,6 +225,29 @@ def test_call_failure_and_long_poll(c):
     c.post("/demo/reset")
 
 
+def test_stale_gestures_and_not_held(c):
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press", "screen_id": "ready"})
+    c.post("/input", json={"gesture": "press", "screen_id": "cancelled"})
+    assert c.get("/state").json()["screen"]["screen_id"] == "booking_offer"
+
+    # a late "hold" from another screen must not book the flight
+    r = c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"}).json()
+    assert r["handled"] is False and "stale screen" in r["reason"]
+    assert c.get("/ledger").json()["spends"] == []
+
+    # the same gesture for the screen actually shown goes through
+    assert c.post("/input", json={"gesture": "hold", "screen_id": "booking_offer"}).json()["handled"] is True
+    assert [s["amount"] for s in c.get("/ledger").json()["spends"]] == [215]
+
+    # a call that ends without the room gets its own screen id, still at stage resolved
+    c.post("/call/completed", json={"held": False})
+    s = c.get("/state").json()
+    assert s["stage"] == "resolved" and s["screen"]["screen_id"] == "not_held"
+    assert s["screen"]["lines"] == ["Room not held", "Details on your phone"]
+    c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -235,6 +258,7 @@ CASES = [
     ("#5/#6 Call outcome checked against transcript", test_call_outcome_verification),
     ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
+    ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
