@@ -23,6 +23,7 @@ import httpx
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from uagents import Agent, Context, Protocol
+from uagents.resolver import GlobalResolver, Resolver
 from uagents_core.contrib.protocols.payment import (
     CancelPayment,
     CommitPayment,
@@ -84,17 +85,20 @@ ruled out.
 exact amount, merchant and remaining budget.
 - pay: the traveller has clearly said yes or no to a spend. Pass their answer through; \
 the engine decides whether it goes through.
-- After hire_caller, always name the fee you paid and who paid it: the Caller is a \
-separate agent that charges per call over the Agent Payment Protocol, and Standby covers \
-it, not the traveller. One short sentence, e.g. "I hired my Caller agent for that — $1.99 \
-over the Agent Payment Protocol, my cost, not your budget."
+- Only a hire_caller result lets you mention the Caller agent at all, and only its own \
+fields say what to tell the traveller: name a fee in one short sentence when it gave you \
+"fee_paid", quoting it exactly; say nothing about money when it gave you \
+"no_fee_was_paid". No hire_caller result this turn means you hired no one: never claim a \
+hire, a fee, or an Agent Payment Protocol payment.
 
 When to call each tool (continued):
-- hire_caller: a business needs phoning — because the engine found a problem downstream \
-and has not already started a call, or because the traveller asked for somewhere specific \
-to be called. It hires the Standby Caller agent, which charges a per-call fee that Standby \
-pays itself, never from the traveller's budget. Tell the traveller what was agreed on the \
-call afterwards.
+- hire_caller: the traveller asks you to phone, call or ring a business, whatever the \
+state of the trip — no booking, a finished one, or none at all. Call it straight away with \
+their request as purpose and the business as to; never refuse, never send them to book \
+first. The tool itself declines when the engine already has a call running. Also use it \
+when a business needs calling and the engine has not started that call. Tell the \
+traveller what was agreed, from the result's outcome only. Never report what a business \
+said without a hire_caller result this turn.
 - save_to_vault: a document or transcript should be kept.
 - get_status: the traveller asks "status?", "where are we", or anything about progress.
 - get_ledger: the traveller asks about money, budget, refunds or what was spent.
@@ -116,9 +120,10 @@ afterwards and the fee allowance, then ask them to reply "REPLY_WITH".
 - Always include the handle when you ask them to reply. A reply without it never reaches \
 you: the chat sends it to the traveller's own assistant instead.
 - When a tool reports a problem found downstream, lead with it before anything else. The \
-traveller has never heard of the place you are about to phone, so say what it is, why it \
-is a problem for them tonight, and that you are calling about it. A phone call must never \
-appear out of nowhere.
+traveller has never heard of the place about to be phoned, so say what it is, why it is a \
+problem for them tonight, and that the call is going out now. Standby places that call \
+itself; never put it down to the Caller agent. A phone call must never appear out of \
+nowhere.
 - Never ask the traveller whether to make a call. The engine places it automatically.
 - Say each thing once. You may write before and after a tool call, and both halves reach \
 the traveller as one message, so do not restate what you have already told them.
@@ -208,10 +213,9 @@ TOOLS = [
         "name": "hire_caller",
         "description": (
             "Hire the Standby Caller agent to phone a business that has no API, and wait "
-            "for what it agreed. The Caller charges a per-call fee that Standby pays "
-            "itself — it does not come out of the traveller's budget. Use this when a "
-            "call is needed and the engine has not already started one, or when the "
-            "traveller asks for somewhere specific to be phoned."
+            "for what it agreed. Use this when a call is needed and the engine has not "
+            "already started one, or when the traveller asks for somewhere specific to "
+            "be phoned."
         ),
         "input_schema": {
             "type": "object",
@@ -315,7 +319,12 @@ async def wire(ctx: Context, job: dict | None, line: str) -> None:
 def outcome_line(o: dict) -> str:
     if o.get("error"):
         return f"← outcome · {o['error']}"
-    bits = ["room held" if o.get("held") else "nothing held"]
+    if "held" in o or o.get("voicemail"):
+        bits = ["room held" if o.get("held") else "nothing held"]
+    else:
+        bits = [f"{'agreed' if o.get('agreed') else 'declined'}: {o.get('asked') or 'the request'}"]
+        if o.get("contact"):
+            bits.append(f"spoke to {o['contact']}")
     if o.get("held") and o.get("door_code") and o.get("verified"):
         bits.append(f"door code {o['door_code']}")
     if o.get("fee_usd"):
@@ -329,6 +338,28 @@ def outcome_line(o: dict) -> str:
         bits.append(mode)
     return "← outcome · " + " · ".join(bits)
 
+# Reaching a Caller that is running on this machine. The Caller is a mailbox agent, so the
+# Almanac sends everyone to Agentverse — correct for ASI:One, but it means a local pair
+# cannot talk without a connected mailbox and a round trip. The shortcut belongs on the
+# sender: putting a loopback endpoint on the Caller would publish 127.0.0.1 as its only
+# public address and break it for everyone else (see the note in caller/agent.py).
+# This only ever prepends; the mailbox stays in the list, so a Caller that isn't running
+# locally still gets the message. uagents tries endpoints in order and stops at the first
+# that answers 200 (uagents/communication.py:145-182).
+CALLER_LOCAL_ENDPOINT = os.getenv("CALLER_LOCAL_ENDPOINT", "").strip()
+
+
+class LocalFirstResolver(Resolver):
+    """GlobalResolver, but try the Caller on loopback first when asked to."""
+
+    def __init__(self) -> None:
+        self._global = GlobalResolver()
+
+    async def resolve(self, destination: str) -> tuple[str | None, list[str]]:
+        address, endpoints = await self._global.resolve(destination)
+        if CALLER_LOCAL_ENDPOINT and destination == CALLER_ADDRESS:
+            return address or destination, [CALLER_LOCAL_ENDPOINT, *endpoints]
+        return address, endpoints
 
 AGENT_SEED = os.getenv("AGENT_SEED")
 if not AGENT_SEED:
@@ -343,6 +374,7 @@ agent = Agent(
     seed=AGENT_SEED,
     port=int(os.getenv("ORCHESTRATOR_PORT", "8001")),
     mailbox=True,
+    resolve=LocalFirstResolver(),
     publish_agent_details=True,
     # hire_caller awaits the Caller's reply from inside a chat turn. With sequential
     # handling that reply queues behind the very handler waiting for it, and the turn
@@ -675,7 +707,8 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
             lines = (snap.get("screen") or {}).get("lines") or []
             if snap.get("stage") in ("calling", "fee", "resolved") and lines:
                 out["problem_found_downstream"] = lines
-                out["doing_now"] = "calling them to hold the room"
+                out["doing_now"] = ("Standby is placing that call itself — no Caller "
+                                    "agent was hired and no fee was paid")
         return out
 
     if name == "hire_caller":
@@ -683,15 +716,17 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
             return {"error": "no Caller agent is configured; set CALLER_ADDRESS"}
         # Never pay for a call the engine is already making. The prompt says not to, but
         # a wrong call here costs real money, so it is enforced rather than requested.
+        # "booked" counts: the engine dials from after_booking() a second and a half
+        # later and cannot be called off, so a hire inside that window buys a duplicate.
+        # An unreachable engine during a live task is refused rather than waved through —
+        # failing open here would spend on exactly the turns we can least account for.
         try:
             stage = (await snapshot(state)).get("stage")
         except httpx.HTTPError:
-            stage = None
-        # "booked": the engine places this call itself right after the booking (Claude decides
-        # whether it's needed, which takes a few seconds). Hiring the Caller in that window ran a
-        # second, simulated call that finished the task before the real call could.
-        if stage in ("booked", "calling", "fee"):
-            return {"not_hired": "a call is already in progress for this task; nothing to pay for",
+            stage = "unknown" if state.get("task_id") else None
+        if stage in ("booked", "calling", "fee", "unknown"):
+            return {"not_hired": "the engine is already handling the call for this task; "
+                                 "no Caller was hired and no fee was paid",
                     "stage": stage,
                     "say_nothing_about_this": "The traveller already knows a call is "
                                               "underway. Do not mention this tool at all."}
@@ -716,10 +751,22 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
                        f"✕ no outcome from {CALLER_HANDLE} after {CALL_RESULT_TIMEOUT_S}s")
         fee = jobs.get(reference, {}).get("fee")
         shown = jobs.pop(reference, {}).get("wire", [])
+        # "hired" only ever means a job was sent — a timeout, or a Caller that never asked
+        # to be paid, both land here with fee unset. Say which happened rather than
+        # leaving the model to infer a payment from the word "hired".
+        if fee:
+            return {
+                "hired": "standby-caller",
+                "fee_paid": f"{fee}, settled over the Agent Payment Protocol",
+                "who_paid": "Standby, from its own budget, never the traveller's",
+                "outcome": outcome,
+                "traveller_already_saw": shown,
+            }
         return {
             "hired": "standby-caller",
-            "fee_paid": fee or "nothing — the call was never paid for",
-            "who_paid": "Standby, from its own budget, not the traveller's",
+            "no_fee_was_paid": "The Caller never charged for this one.",
+            "say_nothing_about_money": "Report only what the call achieved. Do not mention "
+                                       "a fee, a payment or the Agent Payment Protocol.",
             "outcome": outcome,
             "traveller_already_saw": shown,
         }
@@ -781,12 +828,17 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
 
 # ---------- the Claude tool-use loop ----------
 
-async def think(ctx: Context, state: dict, messages: list[dict]) -> str:
+async def think(ctx: Context, state: dict, messages: list[dict],
+                tools: list[dict] | None = None) -> str:
     """Run Claude with tools until it stops calling them, returning everything it said.
 
     Claude often writes the narration in the same response as the tool call it is about
     to make, so text has to be collected from every hop — keeping only the last one
-    truncates the reply to its closing sentence."""
+    truncates the reply to its closing sentence.
+
+    `tools` narrows what this turn may reach for. A turn that only has to put facts it
+    already holds into words is given none, so it cannot spend money on the way."""
+    offered = TOOLS if tools is None else tools
     said: list[str] = []
     for _ in range(MAX_TOOL_HOPS):
         response = await llm.messages.create(
@@ -794,8 +846,8 @@ async def think(ctx: Context, state: dict, messages: list[dict]) -> str:
             max_tokens=MAX_TOKENS,
             thinking=THINKING,
             system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            tools=TOOLS,
             messages=messages,
+            **({"tools": offered} if offered else {}),
         )
         if response.stop_reason == "refusal":
             return "I can't help with that one. Tell me about the flight and I'll pick it up from there."
@@ -809,6 +861,11 @@ async def think(ctx: Context, state: dict, messages: list[dict]) -> str:
             return "\n\n".join(said).strip()
 
         messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
+        if said and state.get("reply_to") and any(b.name == "hire_caller" for b in tool_uses):
+            # The hire narrates itself line by line as it runs. Send what Claude said
+            # before it first, or "calling them now" arrives after the call has ended.
+            await say(ctx, state["reply_to"], "\n\n".join(said))
+            said.clear()
         results = []
         for block in tool_uses:
             try:
@@ -925,8 +982,10 @@ async def on_payment_request(ctx: Context, sender: str, msg: RequestPayment):
         await ctx.send(sender, RejectPayment(reason=f"over Standby's ${CALLER_MAX_USD:.2f} per-call cap"))
         await wire(ctx, job, f"→ RejectPayment · over my ${CALLER_MAX_USD:.2f}/call cap · no call")
         if job is not None:  # the Caller won't dial unpaid; don't sit out the timeout
-            job["outcome"] = {"error": f"not hired: the Caller asked {asked}, over the "
-                                       f"${CALLER_MAX_USD:.2f} per-call cap"}
+            job["outcome"] = {"error": f"not hired: the Caller agent's own price ({asked}) is "
+                                       f"over Standby's ${CALLER_MAX_USD:.2f} per-call cap, "
+                                       "which Standby sets for itself; the traveller's budget "
+                                       "has nothing to do with it. No call was placed."}
             job["event"].set()
         return
 
@@ -1053,7 +1112,10 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
             }
         ]
         try:
-            final = await think(ctx, state, follow)
+            # Every fact this turn needs is in the message above, so it gets no tools:
+            # the engine has already resolved the task, and a stray hire_caller here
+            # would pay the Caller to repeat a call that is finished.
+            final = await think(ctx, state, follow, tools=[])
         except Exception:
             ctx.logger.exception("outcome turn failed")
             final = "The room is held. Say 'status?' for the details."
@@ -1065,7 +1127,9 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
         return
 
     save(ctx, sender, state)
-    await say(ctx, sender, reply, card=await build_card(ctx, state))
+    card = await build_card(ctx, state)
+    if reply or card is not None:
+        await say(ctx, sender, reply, card=card)
 
 
 @chat_proto.on_message(ChatAcknowledgement)

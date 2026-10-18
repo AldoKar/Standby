@@ -15,6 +15,8 @@ import sys
 import warnings
 from pathlib import Path
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).parent / "orchestrator"))
 
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)  # the Agent object we import is never run
@@ -178,6 +180,50 @@ async def test_guardrails() -> None:
         orch.snapshot = real_snapshot
     assert res.get("not_hired") and ctx.sent == [], res
     ok("the Caller is not hired between the booking and the engine's own call")
+    # The booking turn must not let the model tell the traveller it hired the Caller:
+    # the engine places that call itself, and nothing was paid to anyone.
+    await reset()
+    s5 = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s5, "get_booking", {})
+    paid = await orch.run_tool(Ctx(), s5, "pay", {"approved": True, "fee_allowance_usd": 50})
+    assert "Standby is placing" in paid.get("doing_now", ""), paid
+    assert "no Caller agent was hired" in paid.get("doing_now", ""), paid
+    assert "1.99" not in json.dumps(paid), paid
+    ok("the booking turn says the engine is calling, not that a Caller was hired")
+
+    # An unreachable engine must not be a licence to spend. Fail closed mid-task.
+    s6 = {"task_id": "task-live", "approval_id": None, "history": []}
+    saved_addr, saved_snapshot = orch.CALLER_ADDRESS, orch.snapshot
+    orch.CALLER_ADDRESS = "agent1qtest"
+
+    async def unreachable(_state):
+        raise httpx.ConnectError("engine down")
+
+    orch.snapshot = unreachable
+    try:
+        ctx = Ctx()
+        res = await orch.run_tool(ctx, s6, "hire_caller", {"purpose": "hold the room"})
+        assert "not_hired" in res, res
+        assert not ctx.sent, "an unreachable engine must not trigger a paid call"
+    finally:
+        orch.CALLER_ADDRESS, orch.snapshot = saved_addr, saved_snapshot
+    ok("an unreachable engine mid-task refuses the hire instead of spending anyway")
+
+    # "hired" only means a job went out. If the Caller never charged — it timed out, or
+    # never asked — the reply must not say a fee was covered on the traveller's behalf.
+    await reset()
+    s7 = {"task_id": None, "approval_id": None, "history": []}
+    saved_addr, saved_timeout = orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S
+    orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S = "agent1qtest", 0.2
+    try:
+        res = await orch.run_tool(Ctx(), s7, "hire_caller", {"purpose": "hold the room"})
+        assert "fee_paid" not in res, res
+        assert "no_fee_was_paid" in res and "say_nothing_about_money" in res, res
+        assert "Payment Protocol" not in json.dumps({k: v for k, v in res.items()
+                                                     if k != "say_nothing_about_money"}), res
+    finally:
+        orch.CALLER_ADDRESS, orch.CALL_RESULT_TIMEOUT_S = saved_addr, saved_timeout
+    ok("a hire the Caller never charged for reports no fee instead of inventing one")
 
     # running the demo twice without a manual reset must still work
     s4 = {"task_id": None, "approval_id": None, "history": []}
@@ -265,7 +311,7 @@ async def test_handshake_narration() -> None:
             "← CompletePayment", "← outcome"], lines
         assert f"tx {tx}" in lines[2] and "$2.00/call cap" in lines[2], lines[2]
         assert "door code 4417" in lines[4] and "simulated call" in lines[4], lines[4]
-        assert res["traveller_already_saw"] == lines and res["fee_paid"] == "1.99 USD", res
+        assert res["traveller_already_saw"] == lines and res["fee_paid"].startswith("1.99 USD"), res
         ok("job → RequestPayment → CommitPayment → CompletePayment → outcome, one line each, in order")
 
         ctx = Ctx()
