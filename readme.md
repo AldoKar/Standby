@@ -130,8 +130,10 @@ The deployed engine runs on Vultr behind Caddy (HTTPS, systemd): [`engine/DEPLOY
 **Even Hub app name:** `Standby` (Beta build).
 
 1. Install the Even Realities app on your phone, sign in and pair your G2.
-2. Install the **Standby** Beta build from Even Hub and open it on the glasses.
+2. In the Even Realities app, go to **Me → Beta tester**, install **Standby** and open it on the glasses.
 3. It connects to the hosted engine; no keys are needed to test. Tap to start the demo.
+
+**Access:** a Beta build only shows up for Even accounts in our Beta group. Judges: send us the email of your Even account and we'll add you to the group, or use the G2 at our table.
 
 **Gestures:** tap = start / yes / book (approvals ask "Are you sure?", tap again) · long press = ask a question by voice (on Ready) or approve directly · swipe down = next flight / no.
 
