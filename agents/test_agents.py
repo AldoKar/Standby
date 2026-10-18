@@ -415,6 +415,42 @@ async def test_fee_consent() -> None:
     assert snap["stage"] == "resolved" and snap["ledger"]["spent_usd"] == 255, snap.get("stage")
     ok("the traveller's yes approves the fee and the call finishes")
 
+    # The chat used to watch the call only inside the approve turn, for a fixed window. A
+    # real call reaches the fee later than that, so the fee was never asked for and the
+    # result never arrived until the traveller said "status?". The watcher runs past the
+    # turn: it asks for the fee when it comes up and posts the result when the call ends.
+    await reset()
+    ctx, who = Ctx(), "traveller"
+    s = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(ctx, s, "get_booking", {})
+    s["said_yes"] = True
+    await orch.run_tool(ctx, s, "pay", {"approved": True})
+    orch.save(ctx, who, s)
+    saved_think = orch.think
+    orch.think = lambda *a, **k: asyncio.sleep(0, "Room held, door code 4417.")
+    try:
+        orch.watch_call(ctx, who, s["task_id"])
+        orch.watch_call(ctx, who, s["task_id"])  # a second turn must not start a second watcher
+        texts = lambda: ["".join(c.text for c in m.content if hasattr(c, "text")) for _, m in ctx.sent]  # noqa: E731
+        for _ in range(300):
+            if any("$40" in t for t in texts()):
+                break
+            await asyncio.sleep(0.1)
+        assert [t for t in texts() if "$40" in t] and len(texts()) == 1, texts()
+        assert orch.load(ctx, who)["approval_id"], "the chat must hold the fee so 'approve' answers it"
+        ok("the watcher asks for the fee in the chat as soon as the call reaches it")
+
+        s = orch.load(ctx, who)
+        s["said_yes"] = True
+        await orch.run_tool(ctx, s, "pay", {"approved": True})
+        await asyncio.wait_for(orch.watching[s["task_id"]], 30)
+        last = ctx.sent[-1][1]
+        assert "door code 4417" in texts()[-1] and any(type(c).__name__ == "EndSessionContent" for c in last.content)
+        assert not orch.watching, orch.watching
+        ok("after the fee is answered, the same watcher posts the result when the call ends")
+    finally:
+        orch.think = saved_think
+
 
 # ---------- interactive cards ----------
 
