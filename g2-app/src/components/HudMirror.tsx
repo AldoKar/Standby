@@ -78,7 +78,9 @@ export function HudMirror({ screen, plan, status, engineStatus, onInput }: Props
             style={{
               ...box(t.x, t.y, t.w, t.h),
               zIndex: t.z,
-              opacity: t.color / 4,
+              // A container with its own border level (the app margin) carries no text: its border sets the look.
+              opacity: t.borderLevel !== undefined ? 1 : t.color / 4,
+              borderColor: t.borderLevel !== undefined ? `rgba(61, 255, 110, ${t.borderLevel / 15})` : undefined,
               padding: `calc(100cqw * ${t.padding ?? PADDING} / ${LENS_W})`,
               borderRadius: t.border ? `calc(100cqw * ${t.radius ?? 10} / ${LENS_W})` : undefined,
             }}
