@@ -371,6 +371,51 @@ async def test_handshake_narration() -> None:
         orch.CALLER_ADDRESS = saved
 
 
+# ---------- a fee mid-call needs the traveller's yes ----------
+
+async def test_fee_consent() -> None:
+    """ASI:One used to send a $50 fee allowance with every approve, so the guesthouse's
+    $40 was charged without asking. Now, as on the glasses, the fee comes back to the
+    traveller, and only their own yes approves it."""
+    section("a fee during the call is asked for, never assumed")
+    await reset()
+    s = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s, "get_booking", {})
+    s["said_yes"] = True
+    p = await orch.run_tool(Ctx(), s, "pay", {"approved": True})
+    assert p["status"] == "approved", p
+    snap = await orch.wait_for_outcome(Ctx(), s)
+    a = orch.pending_approval(snap)
+    assert snap["stage"] == "fee" and a and a["kind"] == "fee" and a["amount"] == 40, snap.get("stage")
+    assert snap["ledger"]["spent_usd"] == 215, "the fee must not be charged before the traveller answers"
+    ok("approving the booking does not pre-approve the $40 fee: the call stops and asks")
+
+    ask = orch.fee_ask(snap, a)
+    assert "$40" in ask and "$45 of your $300" in ask and "approve" in ask, ask
+    rows = {r["label"]: r["value"] for r in json.loads(orch.review_card(snap, a).metadata["card_payload"])["summary_rows"]}
+    assert rows["Fee"] == "$40" and rows["Budget after this"] == "$45 of $300 left", rows
+    ok("the ask quotes the engine's figures, with a review card for the fee")
+
+    s["said_yes"] = orch.explicit_yes("what's happening with the call?")
+    no = await orch.run_tool(Ctx(), s, "pay", {"approved": True})
+    assert "not_done" in no, no
+    assert (await orch.http.get("/state")).json()["stage"] == "fee", "a question must not approve the fee"
+    ok("a question mid-call cannot approve the fee, whatever the model calls")
+
+    for typed, yes in (("approve", True), ("@standby approve", True), ("yes", True), ("ok do it", True),
+                       ("no", False), ("don't approve", False), ("why not the American one?", False),
+                       ("thanks", False), ("is it done?", False)):
+        assert orch.explicit_yes(typed) is yes, typed
+    ok("only a plain yes counts as consent")
+
+    s["said_yes"] = orch.explicit_yes("@standby approve")
+    p = await orch.run_tool(Ctx(), s, "pay", {"approved": True})
+    assert p["status"] == "approved" and p["kind"] == "fee" and s.get("awaiting_outcome"), p
+    snap = await orch.wait_for_outcome(Ctx(), s)
+    assert snap["stage"] == "resolved" and snap["ledger"]["spent_usd"] == 255, snap.get("stage")
+    ok("the traveller's yes approves the fee and the call finishes")
+
+
 # ---------- interactive cards ----------
 
 REQUIRED = {"card_protocol_version", "requires_card_interaction", "card_kind", "card_payload"}
@@ -409,7 +454,7 @@ async def test_cards(resolved: dict) -> None:
     rows = {r["label"]: r["value"] for r in rev["summary_rows"]}
     assert rows["Booking"] == "$215", rows
     assert rows["Budget after this"] == "$85 of $300 left", rows
-    assert "$50" in rows["Fee allowance"], rows
+    assert "ask you" in rows["Fees later"], rows
     assert rev["approve_cta"]["selection"]["action"] == "approve"
     assert rev["reject_cta"]["selection"]["action"] == "decline"
     ok("review card: the engine's figures, Approve and decline")
@@ -427,11 +472,11 @@ def test_selection_parsing() -> None:
     assert "details" in orch.as_instruction('{"action":"review","option_id":"opt-delta"}', s).lower()
     ok("a Review tap becomes a request to see the details")
 
-    msg = orch.as_instruction('{"action":"approve","fee_allowance_usd":50}', s)
-    assert "approve" in msg.lower() and s["fee_allowance"] == 50, (msg, s)
-    ok("an Approve tap carries the fee allowance through")
+    assert orch.as_instruction('{"action":"approve"}', s) == "Approve it."
+    assert "$50" in orch.as_instruction('{"action":"approve","fee_allowance_usd":50}', s)
+    ok("an Approve tap approves, with no fee allowance unless the card carried one")
 
-    assert "don't book" in orch.as_instruction('{"action":"decline"}', s).lower()
+    assert "don't approve" in orch.as_instruction('{"action":"decline"}', s).lower()
     ok("a decline tap reads as a decline")
 
     for typed in ("approve", "why not the American one?", "status?", "{not json"):
@@ -495,6 +540,7 @@ async def main() -> None:
     resolved = await test_tools()
     await test_guardrails()
     await test_handshake_narration()
+    await test_fee_consent()
     await test_cards(resolved)
     test_selection_parsing()
     if live:
