@@ -339,10 +339,13 @@ async def ensure_fresh(ctx: Context, state: dict) -> dict:
             r = await http.get(f"/tasks/{task_id}")
         except httpx.HTTPError:
             return state  # engine unreachable: keep the context rather than destroying it
-        if r.status_code == 404:
-            ctx.logger.info("engine task is gone (demo reset) — starting the chat clean")
-            return {"task_id": None, "approval_id": None, "history": []}
-        return state
+        if r.status_code != 404:
+            return state
+        # The task is gone (a reset, or a newer task started from another relay address).
+        # Start the chat clean, then fall through and adopt whatever is in flight now, so an
+        # "approve" from a relay that remembers an old task still reaches the pending spend.
+        ctx.logger.info("engine task is gone — starting the chat clean")
+        state = {"task_id": None, "approval_id": None, "history": []}
 
     try:
         snap = (await http.get("/state")).json()
