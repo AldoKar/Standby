@@ -717,6 +717,37 @@ def test_trip_claim(c):
         c.post("/demo/reset")
 
 
+def test_claim_api(c):
+    """GET /claim (long-poll until drafted) and POST /claim/submit for the orchestrator: same claim and
+    same effect as the tap on the glasses, once only, and never another trip's claim."""
+    from app import main as engine
+
+    real = engine.CLAIM_DELAY_S
+    engine.CLAIM_DELAY_S = 0.3
+    try:
+        c.post("/demo/reset")
+        assert c.get("/claim").json() == {"claim": None, "drafting": False, "task_id": None, "stage": "ready"}
+        assert c.post("/claim/submit", json={}).status_code == 404
+        for g in ("press", "press", "hold"):
+            c.post("/input", json={"gesture": g})
+        wait_for(c, "fee")
+        c.post("/input", json={"gesture": "hold"})
+        wait_for(c, "resolved")
+        r = c.get("/claim", params={"wait_s": 5}).json()  # waits through the drafting
+        claim = r["claim"]
+        assert claim and claim["status"] == "ready" and claim["total_usd"] == 66 and not r["drafting"]
+        assert c.post("/claim/submit", json={"claim_id": "clm-other"}).status_code == 409
+        r = c.post("/claim/submit", json={"claim_id": claim["claim_id"]}).json()
+        assert r["claim"]["status"] == "submitted" and r["claim"]["submitted_via"] == "asi1"
+        assert r["ledger"]["claims_expected_usd"] == 66
+        assert c.get("/state").json()["screen"]["screen_id"] == "claim_submitted"  # the glasses follow
+        again = c.post("/claim/submit", json={}).json()  # idempotent
+        assert len(again["ledger"]["claims"]) == 1
+    finally:
+        engine.CLAIM_DELAY_S = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -737,6 +768,7 @@ CASES = [
     ("Claude decides: tool calls drive the plan, policy has the last word", test_agent_decides),
     ("Ask: free questions, live flight status, never covers a pending approval", test_ask),
     ("Trip claim: benefits pay back $66, code caps amounts, wearer submits", test_trip_claim),
+    ("Claim API: long-poll until drafted, submit once, never another trip's claim", test_claim_api),
     ("Free mode: real flight, push-to-talk in any language, Start cancels that flight", test_free_mode),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"

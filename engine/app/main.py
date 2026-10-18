@@ -79,6 +79,7 @@ class State:
         self.call_started = False
         self.before_answer: dict | None = None  # the screen an /ask answer covered
         self.claim: dict | None = None  # the travel-benefit claim for this trip (claims.py)
+        self.claim_drafting = False
 
 
 def booking() -> dict:
@@ -487,7 +488,7 @@ async def after_booking() -> None:
             S.stage = "resolved"
             await publish("task.resolved", {"flight": p["flight"], "lodging": None})
             await show("resolved", ["All set", "No call needed"], {"press": "dismiss"}, 10)
-            run_later(prepare_claim(S.task_id))
+            start_claim()
         return
     if not S.call_started:
         await call_lodging()
@@ -544,7 +545,7 @@ async def call_failed(reason: str) -> None:
     await publish("call.completed", {"outcome": S.outcome, "transcript_url": None, "verified": False})
     S.stage = "resolved"
     await show("call_failed", ["Call didn't connect", "Details on your phone"], {"press": "dismiss"}, 10)
-    run_later(prepare_claim(S.task_id))
+    start_claim()
 
 
 async def request_fee(amount: float, reason: str, merchant: str | None = None, mcc: str | None = None) -> dict:
@@ -587,16 +588,31 @@ async def finish_call(outcome: dict, transcript_url: str | None, transcript: str
     else:
         screen_id, lines = "not_held", ["Room not held", "Details on your phone"]
     await show(screen_id, lines, {"press": "dismiss"}, 10)
-    run_later(prepare_claim(S.task_id))
+    start_claim()
 
 
 # ---------- travel-benefit claim ----------
 
+def start_claim() -> None:
+    """Called when the trip resolves. Marks the claim as drafting right away, so GET /claim waits for it."""
+    if S.claim or not S.ledger.spends:
+        return
+    S.claim_drafting = True
+    run_later(prepare_claim(S.task_id))
+
+
 async def prepare_claim(task_id: str | None) -> None:
     """After the trip is handled, get the traveler's money back: Claude drafts the claim from the benefits
     and receipts, claims.py checks every amount, and the wearer taps to submit. Scripted if Claude is off."""
-    if S.claim or not S.ledger.spends:  # already done, or nothing paid
-        return
+    S.claim_drafting = True
+    try:
+        await draft_claim(task_id)
+    finally:
+        if S.task_id == task_id:
+            S.claim_drafting = False
+
+
+async def draft_claim(task_id: str | None) -> None:
     shown_at = asyncio.get_running_loop().time() + CLAIM_DELAY_S  # Claude drafts while the outcome is shown
     filed: dict = {}
 
@@ -648,8 +664,11 @@ def claim_letter(items: list[dict]) -> str:
 
 
 async def submit_claim(via: str) -> None:
-    """The wearer tapped to submit. ponytail: simulated submission; a real one posts to the issuer's claims API."""
+    """The wearer tapped (or ASI:One sent) submit. Once only. ponytail: simulated submission; there's no
+    public Visa claims API today (docs/TRAVEL-CLAIMS.md)."""
     c = S.claim
+    if c["status"] == "submitted":
+        return
     c.update(status="submitted", submitted_at=now(), submitted_via=via)
     S.ledger.claims.append({"claim_id": c["claim_id"], "total_usd": c["total_usd"], "status": "submitted",
                             "program": c["program"], "ts": c["submitted_at"]})
@@ -1037,6 +1056,33 @@ async def merchant_payment(p: PaymentRequest):
 def tap_key_directory():
     """Public key merchants use to check the agent's signed payment requests."""
     return tap.directory()
+
+
+@app.get("/claim")
+async def get_claim(wait_s: float = 0):
+    """The trip's travel-benefit claim for the orchestrator and dashboard. It's drafted a few seconds after the
+    trip resolves; with wait_s, holds the request until it's ready or time runs out (capped at 15 s)."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0.0, min(wait_s, 15.0))
+    while not S.claim and S.claim_drafting and loop.time() < end:
+        await asyncio.sleep(0.25)
+    return {"claim": S.claim, "drafting": S.claim_drafting and not S.claim, "task_id": S.task_id, "stage": S.stage}
+
+
+class ClaimSubmit(BaseModel):
+    claim_id: str | None = None  # guards against submitting a different trip's claim
+    via: str = "asi1"
+
+
+@app.post("/claim/submit")
+async def post_claim_submit(body: ClaimSubmit):
+    """Submit the ready claim, the same as a tap on the glasses. Idempotent: a second call returns it as is."""
+    if not S.claim:
+        raise HTTPException(404, "no claim yet" + (" (drafting)" if S.claim_drafting else ""))
+    if body.claim_id and body.claim_id != S.claim["claim_id"]:
+        raise HTTPException(409, f"claim {body.claim_id} is not the current one ({S.claim['claim_id']})")
+    await submit_claim(body.via[:20])
+    return {"claim": S.claim, "ledger": S.ledger.view(S.mandate)}
 
 
 @app.get("/vault")
