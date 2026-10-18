@@ -1,6 +1,6 @@
 # Voice agent setup: ElevenLabs + Twilio (owner: P4)
 
-Goal: after the wearer books Delta, the engine phones the demo table, the agent asks for the room, pauses on the $40 fee until the wearer holds on the glasses, then reports the outcome. About 30 minutes to set up.
+Goal: after the wearer books Delta, the engine phones the demo table, the agent asks for the room, pauses on the $40 fee until the wearer holds on the glasses, and after the call the engine checks what was agreed against the transcript. About 30 minutes to set up.
 
 Checked against the ElevenLabs API reference on Oct 17, 2026. UI labels move around; if one doesn't match, look for the nearest equivalent.
 
@@ -47,11 +47,18 @@ ElevenLabs → Agents → Create agent → Blank. Name it `Handle It caller`.
 
 Names are case-sensitive and must match exactly, or the agent reads `{{eta}}` out loud.
 
-**Data collection** (Analysis tab, optional but useful for checking the outcome against the transcript): add `held` (boolean), `fee_usd` (number), `door_code` (string), `contact` (string), each described as "what the clerk agreed to". The values show up on every call in Call history.
+**Data collection** (Analysis tab, required): the engine reads these four fields from the post-call webhook (step 5), so the names must match exactly.
 
-## 3. The three tools
+| Identifier | Type | Description |
+|---|---|---|
+| `held` | boolean | True only if the clerk agreed to hold the room tonight |
+| `door_code` | string | The door or key-box code exactly as the clerk said it; empty if none or taken back |
+| `contact` | string | First name of the person the guest should ask for |
+| `fee_usd` | number | Extra fee agreed on the call in US dollars, 0 if none |
 
-All three are webhook (server) tools. The exact config is in [`tools.json`](tools.json); each entry is an ElevenLabs `tool_config`. Replace `<ENGINE_HOST>` with your host.
+## 3. The two tools
+
+Both are webhook (server) tools. The exact config is in [`tools.json`](tools.json); each entry is an ElevenLabs `tool_config`. Replace `<ENGINE_HOST>` with your host.
 
 Agent → Tools → Add tool → Webhook, then fill in:
 
@@ -79,17 +86,6 @@ Agent → Tools → Add tool → Webhook, then fill in:
 
 `wait_s=8` makes each check wait up to 8 seconds for the wearer, so 4 checks cover about 30 seconds. It needs the long-poll from [NEEDS-FROM-P1.md](NEEDS-FROM-P1.md#2-let-check_approval-wait-for-the-answer); until P1 ships it the engine ignores `wait_s` and each check returns at once, which gives the wearer only about 10 seconds.
 
-### `report_outcome`
-
-| Field | Value |
-|---|---|
-| Name | `report_outcome` |
-| Method, URL | `POST https://<ENGINE_HOST>/call/completed` |
-| Body parameters | `held` (boolean, required); `fee_usd` (number); `door_code` (string); `contact` (string), descriptions from `tools.json` |
-| Response timeout | 10 s |
-
-This is how the engine learns the call ended. With `CALL_MODE=elevenlabs` nothing else posts to `/call/completed`, so without this tool the glasses stay on "Calling guesthouse". It leaves `verified` at its default `false`; checking the outcome against the transcript is the engine's job.
-
 **By API instead of the UI** (one call per tool, then attach the returned `id`s on the agent's Tools tab):
 
 ```bash
@@ -108,7 +104,17 @@ python3 -c 'import json,sys; [print(json.dumps({"tool_config": t})) for t in jso
 
 ElevenLabs configures Twilio itself; you don't touch webhooks or TwiML.
 
-## 5. First test call, from ElevenLabs
+## 5. Post-call webhook
+
+This is how the engine learns the call ended. When the agent hangs up, ElevenLabs sends the transcript and the data collection fields to the engine; Gemini checks them against the transcript, and the glasses show the door code only if it's verified (`engine/app/verify.py`, P1's code).
+
+1. ElevenLabs → Agents → Settings → Post-call webhook (workspace settings): create a webhook with URL `https://<ENGINE_HOST>/call/webhook` and turn on transcription webhooks.
+2. Copy the webhook secret it shows into `ELEVENLABS_WEBHOOK_SECRET` in `engine/.env` (step 7). Without it, or with the wrong one, the engine answers 401 and the call never finishes.
+3. Set `GEMINI_API_KEY` in `engine/.env`. Without it nothing is verified, and the glasses show "Room held / Door code on phone" instead of the code.
+
+The engine ignores webhooks whose `task_id` isn't the current task, so test calls from the ElevenLabs page (placeholder `task-test`) and calls from before a Reset don't touch the demo.
+
+## 6. First test call, from ElevenLabs
 
 Phone Numbers → your number → **Outbound call** → pick `Handle It caller` → your phone → Send Test Call.
 
@@ -116,7 +122,7 @@ Pass when: the phone rings within a few seconds, the first sentence says it's an
 
 The tools will fail on this call if the engine has no pending approval; that's expected.
 
-## 6. Let the engine place the call
+## 7. Let the engine place the call
 
 Get the two IDs:
 
@@ -135,6 +141,8 @@ ELEVENLABS_API_KEY=...
 ELEVENLABS_AGENT_ID=agent_...
 ELEVENLABS_PHONE_NUMBER_ID=...
 CALL_TO_NUMBER=+1...
+ELEVENLABS_WEBHOOK_SECRET=...
+GEMINI_API_KEY=...
 ```
 
 On the Vultr box, systemd loads `/opt/handle-it/engine/.env` (see [`engine/DEPLOY.md`](../engine/DEPLOY.md)); after editing it, run `systemctl restart handle-it`. On a laptop, the engine reads plain environment variables, so load the file before starting it:
@@ -160,13 +168,13 @@ What the engine sends (`engine/app/call.py`), checked against `POST /v1/convai/t
 
 Header `xi-api-key`. The response is `{success, message, conversation_id, callSid}`. The request is right; the engine doesn't yet treat `success: false` as a failure (fix in [NEEDS-FROM-P1.md](NEEDS-FROM-P1.md#1-callpy-treat-success-false-as-a-failed-call)).
 
-## 7. Full run with a mid-call approval
+## 8. Full run with a mid-call approval
 
 1. Dashboard → Reset → Simulate cancellation → Press → Press → Hold (books Delta).
 2. "Calling guesthouse" appears and the phone rings. Answer on speaker.
 3. The clerk follows the card below. When the agent says "One moment, let me check with him", the glasses (and the dashboard HUD) show `+$40 late check-in`.
-4. Wait 5 to 20 seconds, then Hold. The agent agrees to the fee, gets the door code, repeats it back, calls `report_outcome` and hangs up.
-5. The glasses show `Room held / Door code 4417`; the dashboard call panel shows the outcome and the ledger shows Delta $215 + fee $40.
+4. Wait 5 to 20 seconds, then Hold. The agent agrees to the fee, gets the door code, repeats it back and hangs up.
+5. A few seconds after the hang-up, the webhook arrives and Gemini checks the transcript. The glasses show `Room held / Door code 4417`; the dashboard call panel shows the outcome, the check's summary and any issues, and the ledger shows Delta $215 + fee $40.
 
 **Clerk card** (print it for the judge playing the clerk):
 
@@ -186,7 +194,7 @@ Header `xi-api-key`. The response is `{success, message, conversation_id, callSi
 
 Also try a Swipe instead of Hold once: the agent should decline the fee and ask whether the room can still be held.
 
-## 8. Save recorded calls for the fallback
+## 9. Save recorded calls for the fallback
 
 After a clean run: ElevenLabs → Call history → open the call → download the audio. Save it as `dashboard/recorded-call.mp3`, replacing the placeholder, and commit it. The dashboard's **Play recorded call** button plays that file. Ask whoever played the clerk before you keep their voice in the repo.
 
@@ -201,6 +209,7 @@ Keep a second good call as `dashboard/recorded-call-2.mp3` in case the first one
 | The callee hears a trial message | The Twilio account isn't upgraded |
 | Silence or garbled audio | The native integration sets the audio format itself. If not, set the TTS output format and the user input audio format to μ-law 8000 Hz |
 | Agent reads `{{eta}}` aloud | A variable name doesn't match exactly, or the engine isn't sending it |
-| Tool call fails | Open `https://<ENGINE_HOST>/state` in a browser. If the tunnel restarted, the host changed: update all three tool URLs |
+| Tool call fails | Open `https://<ENGINE_HOST>/state` in a browser. If the tunnel restarted, the host changed: update both tool URLs and the webhook URL |
 | Agent gives up before the wearer answers | `wait_s` isn't live yet (see step 3). Meanwhile, the clerk keeps talking for a beat, or use the README fallback "Fees up to $30 OK?" |
-| Glasses stuck on "Calling guesthouse" after hang-up | The agent didn't call `report_outcome`. Check the transcript in Call history; tighten the prompt's last rule |
+| Glasses stuck on "Calling guesthouse" after hang-up | The webhook didn't reach the engine: wrong URL, wrong `ELEVENLABS_WEBHOOK_SECRET` (engine logs show 401), or Reset was pressed during the call |
+| "Room held / Door code on phone" | The code wasn't verified. The dashboard call panel lists the issues; with no `GEMINI_API_KEY` it says "not checked" |

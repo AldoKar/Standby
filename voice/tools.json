@@ -13,10 +13,19 @@
         "request_body_schema": {
           "type": "object",
           "properties": {
-            "amount": { "type": "number", "description": "Amount in US dollars" },
-            "reason": { "type": "string", "description": "Short reason, e.g. late check-in" }
+            "amount": {
+              "type": "number",
+              "description": "Amount in US dollars"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Short reason, e.g. late check-in"
+            }
           },
-          "required": ["amount", "reason"]
+          "required": [
+            "amount",
+            "reason"
+          ]
         }
       }
     },
@@ -30,32 +39,18 @@
         "url": "https://<ENGINE_HOST>/call/approval/{approval_id}",
         "method": "GET",
         "path_params_schema": {
-          "approval_id": { "type": "string", "description": "The approval_id returned by request_approval" }
+          "approval_id": {
+            "type": "string",
+            "description": "The approval_id returned by request_approval"
+          }
         },
         "query_params_schema": {
           "properties": {
-            "wait_s": { "type": "integer", "constant_value": 8 }
+            "wait_s": {
+              "type": "integer",
+              "constant_value": 8
+            }
           }
-        }
-      }
-    },
-    {
-      "type": "webhook",
-      "name": "report_outcome",
-      "description": "Call exactly once, right before ending the call, after repeating back what was agreed. Report only what the clerk actually said. Leave door_code out if the clerk did not give one or took it back.",
-      "response_timeout_secs": 10,
-      "api_schema": {
-        "url": "https://<ENGINE_HOST>/call/completed",
-        "method": "POST",
-        "request_body_schema": {
-          "type": "object",
-          "properties": {
-            "held": { "type": "boolean", "description": "True only if the clerk agreed to hold the room tonight" },
-            "fee_usd": { "type": "number", "description": "Extra fee agreed on the call in US dollars, 0 if none" },
-            "door_code": { "type": "string", "description": "Door or key-box code exactly as the clerk said it" },
-            "contact": { "type": "string", "description": "First name of the person the guest should ask for" }
-          },
-          "required": ["held"]
         }
       }
     }

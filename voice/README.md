@@ -8,8 +8,9 @@ Step by step in [`setup.md`](setup.md). In short:
 
 1. In ElevenLabs, create an Agent with the prompt and first message below.
 2. Buy or import a Twilio number into ElevenLabs (native Twilio integration). Upgrade the Twilio account ($20) so callees don't hear the trial message.
-3. Add the three server tools from `tools.json`, pointing at the engine's public URL. `report_outcome` posts the result to `POST /call/completed`, which is how the engine learns the call ended.
+3. Add the two server tools from `tools.json`, pointing at the engine's public URL.
 4. Set `CALL_MODE=elevenlabs` plus the ElevenLabs variables in `engine/.env`. The engine places the call itself after booking, using `engine/app/call.py` (checked against the ElevenLabs docs on Oct 17; see [`NEEDS-FROM-P1.md`](NEEDS-FROM-P1.md)).
+5. Post-call: point ElevenLabs' post-call webhook at `https://<engine>/call/webhook` and add the data collection fields `held`, `door_code`, `contact`, `fee_usd`. The engine checks them against the transcript with Gemini and only then shows the door code.
 
 ## Dynamic variables
 
@@ -39,7 +40,7 @@ Rules:
   - still pending after 4 checks: say you will call back, and end the call.
 - Keep it short: at most 3 exchanges with the clerk.
 - Before hanging up, repeat back what was agreed: room held or not, fee, door code, contact name.
-  Then call report_outcome once with what the clerk actually said, and end the call.
+  Then end the call.
 ```
 
 ## Fallbacks

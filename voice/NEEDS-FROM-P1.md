@@ -74,6 +74,8 @@ The panel calls `GET /tests` and shows "not exposed yet" on a 404. Proposed shap
 
 ## 5. Smaller things noticed
 
-- **`report_outcome` is the end of the call.** With `CALL_MODE=elevenlabs`, the agent's new `report_outcome` tool is the only thing that posts `/call/completed`. If the clerk hangs up first, the flow stays on "Calling guesthouse". Optional: a timeout (say 120 s after `call.started`) that finishes the call as not held.
-- **Call failed to start:** `after_booking` publishes `call.completed` with the error but leaves the stage at `calling` and the glasses on "Calling guesthouse". Optional: a screen such as `["Call didn't connect", "Details on your phone"]`.
-- **Held but no code:** `finish_call` shows "Room not held" when `held` is true and `door_code` is missing (for example, the clerk will leave the door open). Probably `["Room held", "Details on your phone"]`.
+- **Call failed to start:** `after_booking` publishes `call.completed` with the error but leaves the stage at `calling` and the glasses on "Calling guesthouse". Optional: a screen such as `["Call didn't connect", "Details on your phone"]`. A refused request (item 1) never produces a `call_initiation_failure` webhook, so the webhook doesn't cover this case.
+
+## Already covered by your webhook commit
+
+The voice side now uses your `POST /call/webhook` path: `voice/setup.md` step 5 sets the webhook and secret, and the agent's data collection fields are `held`, `door_code`, `contact`, `fee_usd` to match `call.reported_outcome`. I dropped my `report_outcome` tool so the call isn't finished twice. The dashboard shows the check's `summary` and `issues`.

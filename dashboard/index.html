@@ -58,6 +58,7 @@
   .rec-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .rec audio { width: 100%; margin-top: 8px; height: 36px; }
   .filebtn input { display: none; }
+  .issues { margin: 6px 0 0; padding-left: 18px; }
   #play.nudge { outline: 3px solid var(--ask-bg); box-shadow: 0 0 0 5px #f2c66d; }
 
   /* Ledger */
@@ -297,6 +298,7 @@ function handle(e) {
       call.verified = !!d.verified;
       if (call.outcome.error) nudge("The live call didn't start. Play the recorded call.");
       else call.steps.push({ ts: e.ts, text: 'Call ended' });
+      if (!call.outcome.error && !call.outcome.held && callMode === 'elevenlabs') nudge('The live call ended without the room held. Need the fallback? Play the recorded call.');
       renderCall();
       break;
     case 'demo.reset':
@@ -374,12 +376,15 @@ function renderCall() {
   if (o && o.error) out = `<p class="small" style="color: var(--bad)">${esc(o.error)}</p>`;
   else if (o) {
     const link = /^https?:\/\//.test(call.transcript || '') ? `<p class="small"><a href="${esc(call.transcript)}" target="_blank" rel="noopener">Transcript</a></p>` : '';
+    const issues = (o.issues || []).map((i) => `<li>${esc(i)}</li>`).join('');
     out = `<dl>
       <dt>Door code</dt><dd>${esc(o.door_code || '—')}</dd>
       <dt>Contact</dt><dd>${esc(o.contact || '—')}</dd>
       <dt>Fee agreed</dt><dd>${o.fee_usd != null ? esc(usd(o.fee_usd)) : '—'}</dd>
       <dt>Checked against transcript</dt><dd>${call.verified ? chip('good', '✓ Verified') : chip('neutral', 'Not verified')}</dd>
-    </dl>${link}`;
+    </dl>
+    ${o.summary ? `<p class="small">${esc(o.summary)}</p>` : ''}
+    ${issues ? `<ul class="small quiet issues">${issues}</ul>` : ''}${link}`;
   }
   $('call-outcome').innerHTML = out;
 }
