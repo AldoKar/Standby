@@ -22,8 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import call, policy, verify, voice
-from . import call, policy, tap, verify
+from . import call, policy, tap, verify, voice
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
