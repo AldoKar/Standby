@@ -67,6 +67,8 @@ Config comes from the repo-root `.env` (never commit it):
 | `ENGINE_URL` | Defaults to `http://localhost:8000`. |
 | `CLAUDE_MODEL` | Defaults to `claude-sonnet-5`. Set `claude-haiku-4-5` if latency is bad. |
 | `ORCHESTRATOR_PORT` | Defaults to `8001`. |
+| `CALLER_ADDRESS` | The Caller's address, so the orchestrator can hire it. |
+| `CALLER_LOCAL_ENDPOINT` | Set to `http://127.0.0.1:8002/submit` when both agents run on this machine: the orchestrator then reaches the Caller over loopback instead of waiting on the Agentverse mailbox. Leave it unset in deployment. |
 
 On first run the agent prints its address and an inspector link. The mailbox for
 `agent1qwy…` is already connected; a new address would need connecting through that link
@@ -105,9 +107,15 @@ resolved:
 > `@standby call the guesthouse again and ask for a late checkout tomorrow`
 
 That hires the Caller, pays $1.99 over the Agent Payment Protocol, places the call and
-reports back — and the reply says so: *"I hired my Caller agent for that — $1.99 over the
-Agent Payment Protocol, my cost, not your budget."* Agent-to-agent payments are protocol
-messages, not chat content, so the narration is the only way a judge sees them.
+reports back — and the reply says so, in whatever words it picks that turn: *"Called Hayes
+St Guesthouse — fee $1.99, covered by Standby, not you."* Agent-to-agent payments are
+protocol messages, not chat content, so the narration is the only way a judge sees them.
+
+The wording is not scripted, and deliberately so. An example sentence in the system prompt
+was quotable enough that the model reproduced it on turns where `hire_caller` had never
+run, telling the traveller it had hired and paid an agent that never heard from it. The
+fee now comes from the tool result or is not mentioned: `fee_paid` when the Caller
+actually charged, `no_fee_was_paid` when it did not.
 
 ## Tests
 
@@ -269,6 +277,16 @@ for real means funding the wallets and constructing the agents with `network="te
 The pricing, the handshake and the refusal path are all genuine; the transfer is a
 reference string.
 
-**The Caller's mailbox is not connected.** It advertises a local endpoint so the
-orchestrator can reach it, which is enough for the demo, but ASI:One cannot talk to it
-directly until the mailbox is created through its inspector link.
+**The Caller's mailbox still has to be connected** through its inspector link before
+ASI:One can talk to it directly. Until then the Caller answers only the orchestrator,
+which reaches it over loopback.
+
+It used to advertise that loopback endpoint to the Almanac, which was worse than it
+sounds. uAgents takes a mailbox *or* an endpoint, never both (`uagents/config.py:75-99`):
+passing `endpoint=` dropped the mailbox entirely, started no mailbox client, and published
+`http://127.0.0.1:8002/submit` as the Caller's one public address — so every sender,
+ASI:One included, was told to deliver to its own machine. The Almanac record is global and
+last-writer-wins, so a single local run was enough to break it for everyone, invisibly
+from this laptop. The Caller is now `mailbox=True` only, and the local shortcut lives on
+the sender instead: set `CALLER_LOCAL_ENDPOINT` on the orchestrator and its resolver tries
+loopback first, falling back to the mailbox when nothing answers there.

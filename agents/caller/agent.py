@@ -63,10 +63,17 @@ RING_S = float(os.getenv("CALL_RING_SECONDS", "2"))
 
 MOCK = json.loads((ROOT / "contract" / "mock-data.json").read_text())
 
-# Until the mailbox is connected on Agentverse, the orchestrator can only reach the Caller
-# if it advertises an endpoint. Harmless once the mailbox exists; essential before then.
+# Reachability: mailbox only, and `endpoint=` must never be passed alongside it.
+# uagents/config.py:75-99 takes the endpoint and drops the mailbox when both are given,
+# so `is_mailbox_agent` goes False, no MailboxClient is ever started, and the agent
+# registers as type "custom" instead of "mailbox" — which is also why the Agentverse
+# inspector would not offer to create a mailbox for it. Worse, the Almanac record is
+# global and last-writer-wins: one run with a loopback endpoint publishes
+# http://127.0.0.1:8002 as this agent's only public address, so every sender — ASI:One
+# included — is told to deliver to its own machine. That failure is invisible from here.
+# To reach a locally-run Caller, the sender takes the shortcut instead: see
+# CALLER_LOCAL_ENDPOINT in orchestrator/agent.py.
 CALLER_PORT = int(os.getenv("CALLER_PORT", "8002"))
-CALLER_ENDPOINT = os.getenv("CALLER_ENDPOINT", f"http://127.0.0.1:{CALLER_PORT}/submit")
 
 CALLER_SEED = os.getenv("CALLER_SEED")
 if not CALLER_SEED:
@@ -78,8 +85,7 @@ agent = Agent(
     name="standby-caller",
     seed=CALLER_SEED,
     port=CALLER_PORT,
-    mailbox=True,
-    endpoint=[CALLER_ENDPOINT],
+    mailbox=True,  # never add endpoint= here; see the note above CALLER_PORT
     publish_agent_details=True,
     description=(
         "Phones businesses that have no API and reports back what was agreed. Says it is "
@@ -287,6 +293,8 @@ async def on_reject(ctx: Context, sender: str, msg: RejectPayment):
 async def startup(ctx: Context):
     ctx.logger.info(f"Standby Caller ready at {ctx.agent.address}")
     ctx.logger.info(f"${PRICE_USD} per call, settled over {PAYMENT_METHOD} (simulated)")
+    ctx.logger.info(f"reachable over the Agentverse mailbox; /submit also listens on "
+                    f"port {CALLER_PORT} for senders that take the local shortcut")
 
 
 agent.include(chat_proto, publish_manifest=True)
