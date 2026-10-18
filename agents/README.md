@@ -8,12 +8,12 @@
 | Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
 | Caller | `standby-caller` | `agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07` | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
 
-Shared asi1.ai chat URL (opens logged out, verified):
-**https://asi1.ai/shared-chat/ab2f568d-d49e-4ec4-a279-5bb77195afbd**
+Shared asi1.ai chat URL (Oct 18, 10:00 run):
+**https://asi1.ai/shared-chat/908014af-42c3-4614-8370-98459629cda1**
 
-That one chat evidences every Fetch requirement: discovery and use through ASI:One, the
-whole flow in one conversation, and the Caller hired and paid over the Agent Payment
-Protocol.
+That one chat evidences every Fetch requirement: discovery and use through ASI:One, a live
+FlightAware check, the whole flow in one conversation with Interactive Cards, the mid-call
+fee approved in chat, and the Caller hired and paid over the Agent Payment Protocol.
 
 ### A rendering quirk worth knowing
 
@@ -228,11 +228,9 @@ CALL_VOICEMAIL_FIRST=true python caller/agent.py   # force the retry path for a 
       reachable and the whole flow completes, which is what the hackpack asks for
       ("discoverable and functional through ASI:One", "primary workflows complete within
       ASI:One conversations"). **Demo with the handle, every message.**
-- [ ] Interactive Cards: all three built and structurally validated against the spec, but
-      **asi1.ai renders the text, not the cards** (tested 2026-10-17 with a direct
-      `@standby` mention). The documented behaviour is a silent fallback to text, which is
-      what we see. Cards stay attached — they cost nothing and lose nothing. See
-      "Interactive Cards" below for what was tried.
+- [x] Interactive Cards render in asi1.ai (confirmed 2026-10-18: the fee card showed with
+      **Approve $40** / **No**). Tapping a button is not reliable yet — see "Interactive
+      Cards" below. **Demo by typing `@standby approve`.**
 - [x] Caller agent paid through the Payment Protocol, with a retry-on-voicemail path —
       `AgentPaymentProtocol 0.1.0`, Caller is the seller, orchestrator the buyer. Verified
       agent-to-agent: hire → RequestPayment $1.99 → CommitPayment → CompletePayment →
@@ -249,15 +247,15 @@ silently falls back to that same text. Nothing is lost either way.
 | Card | Kind | When |
 |---|---|---|
 | Options | `carousel` | After `get_booking` / `search_flights`. The pick is badged **Recommended** and is the only item with a button; the two the policy ruled out carry their reason in the subtitle and no CTA, which is this surface's version of struck through. |
-| Review | `review` | After `request_approval`. Flight, departure, arrival, price, budget left afterwards, fee allowance; **Approve $215** and **No, not this one**. |
+| Review | `review` | After `request_approval`. Flight, departure, arrival, price, budget left afterwards, fee allowance; **Approve $215** and **No, not this one**. For a fee asked during the call: who asked, what for, the fee, budget left; **Approve $40** and **No**. |
 | Result | `review`, terminal | When the task resolves. Room, door code, who was spoken to, fee, spent, refund pending. Not interactive. |
 
-**Status: asi1.ai did not render them.** Both a planner-routed and a direct `@standby`
-message came back as plain text. Fetch's spec says an unrenderable card degrades silently
-to the accompanying text, which matches what we saw, so this may be a payload the UI
-rejects or simply a surface that does not draw cards yet. The text path is unaffected and
-is what the demo shows. Left attached rather than ripped out: zero cost if unrendered,
-and it works the moment the surface supports it.
+**Status: asi1.ai renders them; the buttons are not reliable.** On Oct 17 the cards came
+back as plain text. By Oct 18 they render. But tapping **Approve $40** on the fee card did
+not approve the fee: the agent got a message it did not read as a yes and asked again,
+and the fee stayed `pending`. Our guess is that ASI:One relayed the tap through its own
+assistant as prose rather than the JSON selection below, but this has not been checked in
+the logs. Typed replies work every time, so the demo types.
 
 A button press arrives as a JSON selection string (`{"action": "approve", …}`).
 `as_instruction()` turns it into the sentence the traveller would have typed, so card taps
