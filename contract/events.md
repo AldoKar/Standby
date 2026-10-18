@@ -24,6 +24,7 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 | `call.started` | The phone call starts | `to`, `purpose`, `mode` (mock, elevenlabs) |
 | `call.completed` | The call ended | `outcome` (`held`, `fee_usd`, `door_code`, `contact`), `transcript_url`, `verified` |
 | `task.resolved` | The whole fix is done | `flight`, `lodging` (`held`, `door_code`) |
+| `voice.heard` | A voice command was transcribed and classified (`POST /voice`) | `screen_id`, `transcript`, `intent` (or `unknown`), `confidence`, `via` (keywords, model, none) |
 | `demo.reset` | Reset was pressed | `{}` |
 
 ## `hud.screen` in detail

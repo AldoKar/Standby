@@ -89,6 +89,8 @@ export function showScreen(screen: HudScreen, clearAfterS: number | null = null)
     const gen = generation
     clearTimer = setTimeout(() => showScreenIfCurrent(gen, blankScreen(screen.id)), clearAfterS * 1000)
   }
+  const gen = generation
+  changeListeners.forEach((fn) => fn(screen, gen))
   return generation
 }
 
@@ -101,6 +103,27 @@ export function showScreenIfCurrent(gen: number, screen: HudScreen): boolean {
   if (gen !== generation) return false
   showScreen(screen)
   return true
+}
+
+/**
+ * Update fields of the screen that is showing (e.g. the voice state) without making it a "new" screen:
+ * the generation, gesture settle timer and clear timer stay as they are. No-op if `gen` is stale.
+ */
+export function patchScreen(gen: number, patch: Partial<HudScreen>): boolean {
+  if (gen !== generation) return false
+  current = { ...current, ...patch }
+  render()
+  return true
+}
+
+const changeListeners = new Set<(screen: HudScreen, gen: number) => void>()
+
+/** Fires once per new screen (not on patches or animation frames). */
+export function onScreenChange(fn: (screen: HudScreen, gen: number) => void): () => void {
+  changeListeners.add(fn)
+  return () => {
+    changeListeners.delete(fn)
+  }
 }
 
 export function currentScreen(): HudScreen {

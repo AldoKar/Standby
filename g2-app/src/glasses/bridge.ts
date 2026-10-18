@@ -5,6 +5,8 @@
 // Rendering: callers hand over a PagePlan (hud/layout.ts). A single serial loop applies only the latest
 // plan: full rebuild when the layout signature changes, otherwise per-container text/image updates.
 import {
+  AudioInputSource,
+  AudioSpeakerRole,
   CreateStartUpPageContainer,
   ImageContainerProperty,
   ImageRawDataUpdate,
@@ -70,6 +72,46 @@ export function isRenderIdle(): boolean {
 }
 
 const inputListeners = new Set<(input: GlassesInput) => void>()
+
+// ---------- microphone ----------
+// PCM s16le, 16 kHz, mono, via onEvenHubEvent → audioEvent. The page must exist before the glasses mic opens.
+export type AudioListener = (pcm: Uint8Array, role: AudioSpeakerRole) => void
+const audioListeners = new Set<AudioListener>()
+let micOpen = false
+
+export function onAudio(fn: AudioListener): () => void {
+  audioListeners.add(fn)
+  return () => {
+    audioListeners.delete(fn)
+  }
+}
+
+/**
+ * Open or close the glasses mic. Returns what the SDK says, but that boolean can be `false` without
+ * throwing in QR sideload (SKILLEVEN): the voice layer counts real audio chunks instead of trusting it.
+ */
+export async function setMic(open: boolean): Promise<boolean> {
+  if (!bridge || !pageReady) return false
+  if (open === micOpen) return true
+  micOpen = open
+  try {
+    const ok = await withTimeout(
+      open ? bridge.audioControl(true, AudioInputSource.Glasses) : bridge.audioControl(false),
+      CALL_TIMEOUT_MS,
+      'audioControl',
+    )
+    log(`mic ${open ? 'on' : 'off'} → audioControl returned ${ok}`)
+    return ok
+  } catch (err) {
+    log(`mic ${open ? 'on' : 'off'} failed: ${(err as Error).message}`)
+    micOpen = !open
+    return false
+  }
+}
+
+export function canUseMic(): boolean {
+  return Boolean(bridge && pageReady)
+}
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -276,6 +318,18 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
     markBuilt(plan)
 
     bridge.onEvenHubEvent((event) => {
+      // Mic frames arrive on the same channel as gestures; they are never gestures.
+      if (event.audioEvent) {
+        const a = event.audioEvent
+        audioListeners.forEach((fn) => fn(a.audioPcm, a.speakerRole))
+        return
+      }
+      // WebView audio is about to die (phone locked / app backgrounded): close the mic cleanly.
+      if (event.sysEvent?.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT) {
+        log('foreground exit → mic off')
+        void setMic(false)
+        return
+      }
       const input = toInput(event)
       if (!input) return
       if (input === 'double_tap') {

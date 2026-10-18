@@ -513,3 +513,15 @@
   border-color: rgba(230, 235, 230, 0.45);
   color: #e6ebe6;
 }
+
+/* Voice command tester (developer tools) */
+.voice-input {
+  flex: 1;
+  min-width: 220px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 5px 8px;
+  font: inherit;
+}
