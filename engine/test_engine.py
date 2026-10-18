@@ -42,7 +42,7 @@ def test_glasses_flow(c):
     # three flights that fit, the recommended one first and highlighted
     assert s["screen"]["screen_id"] == "flight_list"
     assert s["screen"]["lines"] == ["> Delta 9:15 PM $215", "  Alaska 9:45 PM $239", "  WN2210 10:00 PM $229"]
-    assert s["screen"]["gestures"] == {"hold": "book", "swipe_down": "next"}
+    assert s["screen"]["gestures"] == {"hold": "book", "swipe_down": "next", "select": "highlight"}
     c.post("/input", json={"gesture": "hold"})
     s = wait_for(c, "fee")
     assert s["screen"]["screen_id"] == "fee_request"
@@ -275,8 +275,9 @@ def test_voice_commands(c):
     r = say("okay", "flight_list")
     assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
     assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
-    # "another one" moves the highlight to the next flight; unrelated talk is unknown and changes nothing
-    assert say("show me another one", "flight_list")["intent"] == "other_option"
+    # the glasses' native list owns the selection: "another one" is not a command there (scroll instead)
+    assert say("show me another one", "flight_list")["intent"] == "unknown"
+    c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 1})
     s = c.get("/state").json()
     assert s["screen"]["lines"][1] == "> Alaska 9:45 PM $239" and s["pick"]["flight"] == "AS1290"
     os.environ.pop("OPENROUTER_API_KEY", None)
@@ -780,7 +781,20 @@ def test_budget_consent_and_list(c):
     c.post("/input", json={"gesture": "swipe_down", "screen_id": "flight_list"})  # wraps around to Delta
     assert c.get("/state").json()["screen"]["lines"][0] == "> Delta 9:15 PM $215"
     c.post("/input", json={"gesture": "swipe_down", "screen_id": "flight_list"})
-    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"})
+
+    # native list on the glasses: every move is reported with `select`; the same row twice is a no-op
+    r = c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 2}).json()
+    assert r["handled"] and c.get("/state").json()["pick"]["flight"] == "WN2210"
+    before = len(c.get("/state").json()["approvals"])
+    c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 2})
+    assert len(c.get("/state").json()["approvals"]) == before
+    assert not c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 7}).json()["handled"]
+    # a hold for a row the engine doesn't have highlighted books nothing
+    r = c.post("/input", json={"gesture": "hold", "screen_id": "flight_list", "index": 1}).json()
+    assert not r["handled"] and r["reason"].startswith("selection mismatch")
+    assert c.get("/ledger").json()["spends"] == []
+    c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 1})
+    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list", "index": 1})
     assert [x["merchant"] for x in c.get("/ledger").json()["spends"]] == ["Alaska"]
 
     # the proposed limit follows the fares and is capped

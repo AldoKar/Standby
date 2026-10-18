@@ -2,6 +2,8 @@
 // If the contract changes, update this file to match; never the other way around.
 
 export type Gesture = 'press' | 'hold' | 'swipe_down'
+/** Also sent to POST /input on `flight_list`: the native list's selection moved (with `index`). */
+export type ListGesture = 'select'
 
 /** `hud.screen`: the engine writes all copy; the glasses only render it. */
 export interface EngineScreen {

@@ -6,6 +6,7 @@
 // Choices render as ONE native hint line ("Tap = book  ·  Swipe ↓ = other"), left-aligned like Even's own
 // apps, instead of fake buttons: no centring to fake, one read, and the page structure doesn't change between
 // screens, so most transitions are cheap textContainerUpgrade calls instead of full rebuilds.
+import { destinationArtKey } from './images'
 import type { HudChoice, HudScreen, VoiceState } from './screens'
 
 export const LENS_W = 576
@@ -36,7 +37,28 @@ export type TextSpec = {
 
 export type ImageSpec = { id: number; name: string; x: number; y: number; w: number; h: number; key: string; z: number }
 
-export type PagePlan = { signature: string; texts: TextSpec[]; images: ImageSpec[] }
+/**
+ * Native list (the glasses draw it and move the selection themselves, with a border on the selected item).
+ * `selected` is only for the browser mirror: on the glasses the firmware owns the selection.
+ */
+export type ListSpec = {
+  id: number
+  name: string
+  x: number
+  y: number
+  w: number
+  h: number
+  items: string[]
+  selected: number
+  border?: boolean
+  borderLevel?: number
+  radius?: number
+  padding?: number
+  capture?: boolean
+  z: number
+}
+
+export type PagePlan = { signature: string; texts: TextSpec[]; images: ImageSpec[]; lists?: ListSpec[] }
 
 // The host may reject empty text containers, so blanks are a single space.
 const BLANK = ' '
@@ -56,9 +78,88 @@ export function hintText(choices: HudChoice[], voice?: VoiceState): string {
 
 // Voice status lives in the app-owned header, so the engine's lines never move.
 const VOICE_HEADER: Partial<Record<VoiceState, string>> = {
-  thinking: 'STANDBY · HEARD YOU…',
-  missed: "STANDBY · DIDN'T CATCH THAT",
-  offline: 'STANDBY · VOICE OFF',
+  thinking: 'Heard you…',
+  missed: "Didn't catch that",
+  offline: 'Voice off',
+}
+
+const headerText = (s: HudScreen) => (s.voice && VOICE_HEADER[s.voice]) || s.header
+
+/** Image key for centred text: "text:<px>:<gray 0-255>:<uri-encoded text>" (drawn in images.ts). */
+export function textImageKey(text: string, px: number, gray: number): string {
+  return `text:${px}:${gray}:${encodeURIComponent(text)}`
+}
+
+// Flight list: bordered sections, like Even's own menu layout.
+//   ┌──────────────── Pick your flight ────────────────┐  title box, the title centred (drawn as an image)
+//   ├──────────────────────┬───────────────────────────┤
+//   │ ┌Delta 9:15 PM $215┐ │  [destination photo]      │  left: the flights as a NATIVE list: the glasses
+//   │  Alaska 9:45 PM $239  │                           │  draw the box on the selected one and move it on
+//   │  WN2210 10:00 PM $229 ├───────────────────────────┤  swipe; every move is reported to the engine
+//   │                       │ Tap = book                │  (`select`), and a booking carries the row, so
+//   │                       │ Swipe ↓ = next            │  what you see selected is what gets booked.
+//   └───────────────────────┴───────────────────────────┘
+// The separators are borders of the section containers themselves (3 text + 1 list + 2 image containers).
+// The list items are the engine's rows without its "> " mark, so they don't change when the highlight moves:
+// no rebuild per swipe. A new set of flights (different rows) rebuilds the page.
+const SECTION_BORDER = 5 // dim: the lines organise, they don't compete with the flights
+const LIST_BOX = { x: 4, y: 56, w: 280, h: 228 }
+const ART_BOX = { x: 288, y: 54, w: 284, h: 148 }
+const ART = { x: 290, y: 56, w: 280, h: 144 } // inside ART_BOX; 144 = the host's max image height
+const HELP_BOX = { x: 288, y: 206, w: 284, h: 78 }
+
+/** The engine's rows ("> Delta…", "  Alaska…") without the highlight mark: stable list items. */
+export function listItems(lines: string[]): string[] {
+  return lines.slice(0, 3).map((l) => clamp(l.replace(/^(> |→ |\s+)/, ''), 24))
+}
+
+/** The row the engine has highlighted (its "> " mark; the screen model turns it into "→ "). */
+export function engineHighlight(lines: string[]): number {
+  return Math.max(0, lines.findIndex((l) => /^(> |→ )/.test(l)))
+}
+
+function planList(s: HudScreen): PagePlan {
+  const title = headerText(s)
+  const images: ImageSpec[] = [{ id: 7, name: 'art', ...ART, key: destinationArtKey(), z: 7 }]
+  if (title) {
+    images.unshift({ id: 6, name: 'title', x: (LENS_W - 288) / 2, y: 10, w: 288, h: 36, key: textImageKey(title, 22, 210), z: 6 })
+  }
+  // One instruction per line in the narrow box; "or say it" joins the first while the mic is live.
+  const help = (s.choices ?? []).slice(0, 2).map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`)
+  if (help.length && (s.voice === 'listening' || s.voice === 'thinking')) help[0] = `${help[0]} · or say it`
+  const box = { border: true, borderLevel: SECTION_BORDER, radius: 8 }
+  const items = listItems(s.lines)
+  return {
+    signature: `list:${items.join('|')}`,
+    lists: [
+      {
+        id: 3,
+        name: 'flights',
+        ...LIST_BOX,
+        items,
+        selected: engineHighlight(s.lines),
+        padding: 8,
+        ...box,
+        capture: true, // the list is the one container that captures gestures on this page
+        z: 3,
+      },
+    ],
+    texts: [
+      { id: 1, name: 'titlebox', x: 4, y: 4, w: LENS_W - 8, h: 48, color: DIM, content: BLANK, ...box, z: 1 },
+      { id: 2, name: 'artbox', ...ART_BOX, color: DIM, content: BLANK, ...box, z: 2 },
+      {
+        id: 5,
+        name: 'footer',
+        ...HELP_BOX,
+        color: HINT,
+        content: help.map((l) => clamp(l, 24)).join('\n') || BLANK,
+        padding: 10,
+        ...box,
+        z: 5,
+      },
+    ],
+    images,
+  }
 }
 
 // App margin: a thin, low-brightness outline around the whole app area, so the wearer always knows where
@@ -89,6 +190,7 @@ function planMinimized(): PagePlan {
 
 export function planScreen(s: HudScreen): PagePlan {
   if (s.mini) return planMinimized()
+  if (s.list) return planList(s)
   const texts: TextSpec[] = []
   const blank = s.lines.length === 0
   if (s.alert) {
@@ -131,7 +233,7 @@ export function planScreen(s: HudScreen): PagePlan {
       w: 544,
       h: 44,
       color: s.voice && VOICE_HEADER[s.voice] ? HINT : DIM,
-      content: clamp((s.voice && VOICE_HEADER[s.voice]) || s.header) || BLANK,
+      content: clamp(headerText(s)) || BLANK,
       z: 2,
     },
     {

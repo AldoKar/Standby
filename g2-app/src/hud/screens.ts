@@ -26,7 +26,8 @@ export type HudScreen = {
   // Tap-then-confirm (SPEC fallback for long press): on screens where the engine offers `hold` = approve but
   // not `press`, a tap opens a local confirm screen; a second tap sends `hold`. Long press still works directly.
   tapConfirms?: boolean
-  confirm?: { of: HudScreen } // set on the local confirm screen; `of` is the engine screen being approved
+  // Set on the local confirm screen; `of` is the engine screen being approved, `index` the list row (flight list).
+  confirm?: { of: HudScreen; index?: number }
   voice?: VoiceState // set by the voice layer (src/voice/listener.ts) on screens that take voice commands
   // Free mode: text alone in the middle of the lens (up to 3 bright lines, no icon). Used by the `answer`
   // screen and the push-to-talk steps.
@@ -43,9 +44,9 @@ export type AskPhase = 'listening' | 'thinking' | 'failed'
 
 /**
  * listening: mic verified live → the hint adds "· or say it".
- * thinking: an utterance was sent → header "STANDBY · HEARD YOU…".
- * missed: didn't match a command → header "STANDBY · DIDN'T CATCH THAT" for a moment.
- * offline: voice unavailable (no key, network) → header "STANDBY · VOICE OFF" for a moment.
+ * thinking: an utterance was sent → header "Heard you…".
+ * missed: didn't match a command → header "Didn't catch that" for a moment.
+ * offline: voice unavailable (no key, network) → header "Voice off" for a moment.
  */
 export type VoiceState = 'listening' | 'thinking' | 'missed' | 'offline'
 
@@ -62,31 +63,33 @@ export const VOICE_SCREENS = new Set([
 
 type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar' | 'center' | 'list'>
 
-// Status header per screen. Never "pay", "card" or "Visa" on the glasses (SPEC).
+// Header per screen: only when it adds something the engine's lines don't already say (no brand on every
+// screen: it's visual noise). Empty = no header. Never "pay", "card" or "Visa" on the glasses (SPEC).
 const STYLES: Record<string, Style> = {
-  ready: { header: 'STANDBY', icon: 'plane' },
-  cancelled: { header: 'STANDBY · ALERT', icon: 'alert', alert: true },
-  booking_offer: { header: 'STANDBY · NEEDS YOUR OK', icon: 'plane' },
-  only_option: { header: 'STANDBY · NEEDS YOUR OK', icon: 'plane' },
-  booked: { header: 'STANDBY · BOOKED', icon: 'check' },
+  ready: { header: '', icon: 'plane' },
+  cancelled: { header: '', icon: 'alert', alert: true },
+  booking_offer: { header: 'Pick your flight', icon: 'plane' },
+  only_option: { header: 'Pick your flight', icon: 'plane' },
+  booked: { header: '', icon: 'check' },
   // Long press minimizes the call to a corner icon (hud/callView.ts); the header says so.
-  calling: { header: 'STANDBY IS CALLING · HOLD TO HIDE', icon: 'phone', bar: { kind: 'wave' } },
-  call_resumed: { header: 'STANDBY IS CALLING · HOLD TO HIDE', icon: 'phone' },
-  fee_request: { header: 'STANDBY · NEEDS YOUR OK', icon: 'alert', alert: true },
-  denied: { header: 'STANDBY · BLOCKED', icon: 'alert', alert: true },
-  no_option: { header: 'STANDBY', icon: 'alert', alert: true },
-  resolved: { header: 'STANDBY · DONE', icon: 'check' },
-  answer: { header: 'STANDBY · ANSWER', center: true },
-  declined: { header: 'STANDBY', icon: 'alert' },
-  flight_list: { header: 'STANDBY · PICK A FLIGHT', center: true, list: true },
-  claim_ready: { header: 'STANDBY · MONEY BACK', icon: 'check' },
-  claim_submitted: { header: 'STANDBY · DONE', icon: 'check' },
+  calling: { header: 'Hold to hide', icon: 'phone', bar: { kind: 'wave' } },
+  call_resumed: { header: 'Hold to hide', icon: 'phone' },
+  fee_request: { header: 'Needs your OK', icon: 'alert', alert: true },
+  denied: { header: 'Blocked', icon: 'alert', alert: true },
+  no_option: { header: '', icon: 'alert', alert: true },
+  resolved: { header: '', icon: 'check' },
+  answer: { header: '', center: true },
+  declined: { header: '', icon: 'alert' },
+  // Two columns (layout.ts planList): the three flights on the left, the destination on the right.
+  flight_list: { header: 'Pick your flight', list: true },
+  claim_ready: { header: 'Money back', icon: 'check' },
+  claim_submitted: { header: '', icon: 'check' },
 }
 
 // The engine marks the highlighted row with "> "; the G2 font renders "→" (probed), which reads better.
 const LIST_MARK = '→ '
 
-const DEFAULT_STYLE: Style = { header: 'STANDBY', icon: 'none' }
+const DEFAULT_STYLE: Style = { header: '', icon: 'none' }
 
 const GESTURE_ORDER: Gesture[] = ['press', 'hold', 'swipe_down']
 const CAPTION: Record<Gesture, ChoiceGesture> = { press: 'tap', hold: 'hold', swipe_down: 'swipe' }
@@ -115,7 +118,7 @@ export function fromEngine(s: EngineScreen): HudScreen {
   // `resolved` is also used for the failure ("Room not held"); don't show a success check for it.
   // TODO(P1): a separate screen_id (e.g. `not_held`) would make this explicit.
   if (s.screen_id === 'resolved' && /\bnot\b/i.test(s.lines[0] ?? '')) {
-    style = { header: 'STANDBY', icon: 'alert', alert: true }
+    style = { header: '', icon: 'alert', alert: true }
   }
   const lines = [...s.lines]
 
@@ -174,19 +177,18 @@ export function fromEngine(s: EngineScreen): HudScreen {
  * recap of what's being approved (the engine's own lines, verbatim) so nobody confirms a spend blind.
  * Tap-only by design: voice never approves a spend. Swipe goes back without sending anything.
  */
-export function confirmScreen(of: HudScreen): HudScreen {
+export function confirmScreen(of: HudScreen, index?: number): HudScreen {
   const label = of.choices?.find((c) => c.gesture === 'tap')?.label ?? 'confirm'
+  const row = index !== undefined ? (of.lines[index] ?? '') : of.lines.find((l) => l.startsWith(LIST_MARK)) ?? ''
   return {
     id: `confirm:${of.id}`,
-    header: 'CONFIRM · ONLY TAP, NO VOICE',
+    header: 'Only tap, no voice',
     icon: 'none',
     alert: true, // the bright card = the dialog box
     dialog: true,
     lines: ['Are you sure?'],
     // e.g. "Delta tonight 9:15 PM · $215 · lands 10:40"; on the list, only the highlighted flight
-    detail: of.list
-      ? (of.lines.find((l) => l.startsWith(LIST_MARK)) ?? '').slice(LIST_MARK.length)
-      : of.lines.join(' · '),
+    detail: of.list ? row.replace(/^(→ |> |\s+)/, '') : of.lines.join(' · '),
     choices: [
       { label, gesture: 'tap' },
       { label: 'back', gesture: 'swipe' },
@@ -194,7 +196,7 @@ export function confirmScreen(of: HudScreen): HudScreen {
     gestures: {},
     tapConfirms: false,
     voice: undefined, // the confirm step is tap-only: spends always need a tap
-    confirm: { of },
+    confirm: { of, index },
   }
 }
 
@@ -207,24 +209,24 @@ export function askScreen(of: HudScreen, phase: AskPhase, why = "Didn't catch th
   if (phase === 'listening') {
     return {
       ...base,
-      header: 'STANDBY · LISTENING',
+      header: 'Listening',
       lines: ['Ask me anything', 'about your trip'],
       detail: 'Any language',
       choices: [{ gesture: 'tap', label: 'cancel' }],
     }
   }
-  if (phase === 'thinking') return { ...base, header: 'STANDBY · THINKING…', lines: ['One moment…'] }
-  return { ...base, header: 'STANDBY', lines: [why], choices: [{ gesture: 'hold', label: 'try again' }] }
+  if (phase === 'thinking') return { ...base, header: 'Thinking…', lines: ['One moment…'] }
+  return { ...base, header: '', lines: [why], choices: [{ gesture: 'hold', label: 'try again' }] }
 }
 
 export function idleScreen(build: string): HudScreen {
-  return { id: 'boot', header: 'STANDBY', icon: 'plane', lines: ['Connecting…'], footer: build, gestures: {} }
+  return { id: 'boot', header: '', icon: 'plane', lines: ['Connecting…'], footer: build, gestures: {} }
 }
 
 export function offlineScreen(): HudScreen {
   return {
     id: 'offline',
-    header: 'STANDBY · OFFLINE',
+    header: 'Offline',
     icon: 'alert',
     alert: true,
     lines: ["Can't reach Standby", 'Retrying…'],
@@ -235,7 +237,7 @@ export function offlineScreen(): HudScreen {
 export function gestureFailedScreen(): HudScreen {
   return {
     id: 'gesture_failed',
-    header: 'STANDBY · OFFLINE',
+    header: 'Offline',
     icon: 'alert',
     alert: true,
     lines: ["Didn't reach Standby", 'Try again'],

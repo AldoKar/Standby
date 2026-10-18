@@ -1,0 +1,5 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/engine/.venv/Scripts/python.exe",
+  "pylint.interpreter": ["${workspaceFolder}/engine/.venv/Scripts/python.exe"],
+  "python.analysis.extraPaths": ["${workspaceFolder}/engine"]
+}

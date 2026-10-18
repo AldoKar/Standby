@@ -465,16 +465,24 @@ async def offer_highlighted() -> dict:
     lines = [choice_line(o, i == S.cursor) for i, o in enumerate(S.choices)]
     return await request_spend(
         "booking", p["price_usd"], p["airline"], p["mcc"], f"{p['airline']} {p['flight']} tonight",
-        screen=("flight_list", lines, {"hold": "book", "swipe_down": "next"}))
+        screen=("flight_list", lines, {"hold": "book", "swipe_down": "next", "select": "highlight"}))
 
 
 async def next_choice() -> None:
-    """Swipe on the list: withdraw the highlighted flight's approval and offer the next one."""
+    """Swipe on the list (dashboard, browser): the next row."""
+    await select_choice((S.cursor + 1) % len(S.choices))
+
+
+async def select_choice(index: int) -> None:
+    """Highlight one row: withdraw the current flight's approval and ask for this one. The glasses' native
+    list owns the selection and reports every move (`select`); the same row again changes nothing."""
+    if index == S.cursor and pending("booking"):
+        return
     a = pending("booking")
     if a:
         a["status"] = "withdrawn"
-        await publish("approval.withdrawn", {"approval_id": a["approval_id"], "kind": "booking", "reason": "next option"})
-    S.cursor = (S.cursor + 1) % len(S.choices)
+        await publish("approval.withdrawn", {"approval_id": a["approval_id"], "kind": "booking", "reason": "other option"})
+    S.cursor = index
     if S.cursor:
         S.choices[S.cursor]["chosen_by"] = "traveler"
     await offer_highlighted()
@@ -829,8 +837,11 @@ async def post_event(event: dict):
 # ---------- glasses, dashboard, demo ----------
 
 class Gesture(BaseModel):
-    gesture: str  # press | hold | swipe_down
+    gesture: str  # press | hold | swipe_down | select (native list on the glasses)
     screen_id: str | None = None
+    # flight_list: the row the glasses' native list has selected. With `select` it moves the highlight;
+    # with `hold` it must match the highlighted flight, or nothing is booked.
+    index: int | None = None
 
 
 def pending(kind: str | None = None) -> dict | None:
@@ -873,6 +884,15 @@ async def input_(g: Gesture):
         await show("declined", ["OK, nothing spent", "Tap = fix it"], {"press": "fix"})
     elif stage == "offer" and gesture == "swipe_down" and S.screen["screen_id"] == "flight_list":
         await next_choice()
+    elif stage == "offer" and gesture == "select" and S.screen["screen_id"] == "flight_list":
+        if g.index is None or not 0 <= g.index < len(S.choices):
+            return {"handled": False, "stage": stage, "reason": f"no row {g.index}"}
+        await select_choice(g.index)
+    elif (stage == "offer" and gesture == "hold" and S.screen["screen_id"] == "flight_list"
+          and g.index is not None and g.index != S.cursor):
+        # The glasses approved a different row than the one this approval is for: book nothing.
+        return {"handled": False, "stage": stage,
+                "reason": f"selection mismatch: glasses row {g.index}, engine row {S.cursor}"}
     elif stage in ("offer", "fee") and gesture in ("hold", "swipe_down"):
         a = pending("booking" if stage == "offer" else "fee")
         if not a:

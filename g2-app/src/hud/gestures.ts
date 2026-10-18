@@ -7,7 +7,9 @@
 import { log } from '../debug/logger'
 import type { Engine } from '../engine/client'
 import type { Gesture } from '../engine/types'
+import { listSelection } from '../glasses/bridge'
 import { isCallScreen, toggleCallView } from './callView'
+import { engineHighlight } from './layout'
 import { currentGeneration, currentScreen, screenAgeMs, showScreen, showScreenIfCurrent } from './controller'
 import { confirmScreen, gestureFailedScreen, type HudScreen } from './screens'
 
@@ -77,18 +79,64 @@ export async function handleGesture(engine: Engine, gesture: Gesture): Promise<v
     }
     if (!settled(screen, gesture, gesture === 'press' ? CONFIRM_SETTLE_MS : SETTLE_MS.hold)) return
     log(`confirmed with ${gesture} → hold on ${original.id}`)
-    return send(engine, 'hold', original)
+    return send(engine, 'hold', original, screen.confirm.index)
   }
 
   // A tap on an approval screen opens the confirm step instead of being dropped.
   if (gesture === 'press' && screen.tapConfirms) {
     if (!settled(screen, gesture, SETTLE_MS.press)) return
-    openConfirm(screen)
+    await selecting // the engine must have the row the wearer sees before the dialog names it
+    openConfirm(currentScreen())
     return
   }
 
+  // Native list: swipes move its selection on the glasses (reported as list_select), never "next".
+  // The mirror / keyboard swipe still sends swipe_down (no native list there).
+  if (screen.list && gesture === 'swipe_down' && listSelection() !== null) return
+
   if (!settled(screen, gesture, SETTLE_MS[gesture])) return
+  // Long press on the native list does nothing. The glasses report the selected row with the list's own
+  // events (a tap always carries it; in the simulator a long press doesn't), so only a tap may start a
+  // booking: it opens the dialog, which names the flight that will be booked.
+  if (screen.list && gesture === 'hold' && listSelection() !== null) {
+    log('hold ignored on the flight list: tap the flight to book it')
+    return
+  }
+  if (screen.list && gesture === 'hold') {
+    await selecting
+    openConfirm(currentScreen())
+    return
+  }
   return send(engine, gesture, screen)
+}
+
+/** The flight-list row the wearer sees selected: the glasses' native list, else (browser) the engine's. */
+export function selectedRow(screen: HudScreen): number {
+  return listSelection() ?? engineHighlight(screen.lines)
+}
+
+// The native list moved (reported with the list's events; the simulator only reports it on a tap): tell the
+// engine (`select`), which withdraws the old approval and asks for the new row. Serial and latest-wins; the
+// confirm dialog waits for it (`selecting`), so it never names a stale row. The booking then carries the
+// row (`index`) and the engine refuses it if that isn't the row it has highlighted.
+let selecting: Promise<void> = Promise.resolve()
+let selectWanted: number | null = null
+
+export function handleListSelect(engine: Engine): void {
+  const index = listSelection()
+  if (index === null || !currentScreen().list) return
+  selectWanted = index
+  selecting = selecting.then(async () => {
+    const screen = currentScreen()
+    const want = selectWanted
+    if (want === null || !screen.list || want === engineHighlight(screen.lines)) return
+    try {
+      const r = await engine.input('select', screen.id, want)
+      if (!r.handled) log(`engine ignored select ${want}${r.reason ? `: ${r.reason}` : ''}`)
+    } catch (err) {
+      log(`POST /input select failed: ${(err as Error).message}`)
+    }
+  })
 }
 
 /**
@@ -97,14 +145,16 @@ export async function handleGesture(engine: Engine, gesture: Gesture): Promise<v
  */
 export function openConfirm(screen: HudScreen): void {
   const original: HudScreen = { ...screen, voice: undefined }
-  const gen = showScreen(confirmScreen(original))
+  // On the list, remember the row now: the dialog replaces the list (and its native selection).
+  const index = screen.list ? selectedRow(screen) : undefined
+  const gen = showScreen(confirmScreen(original, index))
   setTimeout(() => {
     if (showScreenIfCurrent(gen, original)) log('confirm timed out, back to the offer')
   }, CONFIRM_TIMEOUT_MS)
 }
 
 /** POST /input for `screen` (the engine screen the gesture belongs to). */
-async function send(engine: Engine, gesture: Gesture, screen: HudScreen): Promise<void> {
+async function send(engine: Engine, gesture: Gesture, screen: HudScreen, index?: number): Promise<void> {
   if (!screen.gestures[gesture]) {
     log(`${gesture} does nothing on ${screen.id}; not sent`)
     return
@@ -113,7 +163,7 @@ async function send(engine: Engine, gesture: Gesture, screen: HudScreen): Promis
   inFlight = true
   const gen = currentGeneration()
   try {
-    const r = await engine.input(gesture, screen.id)
+    const r = await engine.input(gesture, screen.id, index)
     if (!r.handled) log(`engine ignored ${gesture} (stage ${r.stage}${r.reason ? `: ${r.reason}` : ''})`)
   } catch (err) {
     log(`POST /input ${gesture} failed: ${(err as Error).message}`)
