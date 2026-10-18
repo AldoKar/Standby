@@ -42,4 +42,4 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 - `clear_after_s`: blank the screen after this many seconds; `null` keeps it.
 - An empty `lines` array means a blank screen.
 
-The demo flow's screen ids, in order: `ready`, `cancelled`, `booking_offer`, `booked`, `calling`, `fee_request`, `resolved`. Two other screens can appear: `only_option` (swipe down on the booking offer) and `denied` (a spend broke the mandate).
+The demo flow's screen ids, in order: `ready`, `cancelled`, `booking_offer`, `booked`, `calling`, `fee_request`, `resolved`. Other screens that can appear: `only_option` (swipe down on the booking offer), `denied` (a spend broke the mandate) and `call_failed` (the call never connected: "Call didn't connect / Details on your phone").
