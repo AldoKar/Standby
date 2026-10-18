@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import policy
+from . import call, policy, verify
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -255,7 +255,12 @@ async def finish_call(outcome: dict, transcript_url: str | None) -> None:
                                     "lodging": {"held": held, "door_code": code}})
     await publish("vault.updated", {"type": "call_transcript"})
     S.stage = "resolved"
-    lines = ["Room held", f"Door code {code}"] if held and code else ["Room not held", "Details on your phone"]
+    if held and code and outcome.get("verified"):
+        lines = ["Room held", f"Door code {code}"]
+    elif held:
+        lines = ["Room held", "Door code on phone"]  # never show an unverified code
+    else:
+        lines = ["Room not held", "Details on your phone"]
     await show("resolved", lines, {"press": "dismiss"}, 10)
 
 
@@ -424,11 +429,38 @@ class CallOutcome(BaseModel):
     fee_usd: float | None = None
     transcript_url: str | None = None
     verified: bool = False
+    transcript: str | None = None  # "Agent: ...\nClerk: ..."; when present, Gemini checks the outcome
 
 
 @app.post("/call/completed")
 async def call_completed(o: CallOutcome):
-    await finish_call(o.model_dump(exclude={"transcript_url"}), o.transcript_url)
+    outcome = o.model_dump(exclude={"transcript_url", "transcript"})
+    if o.transcript:
+        outcome = await verify.check_call(o.transcript, outcome)
+    await finish_call(outcome, o.transcript_url)
+    return {"ok": True, "outcome": outcome}
+
+
+@app.post("/call/webhook")
+async def call_webhook(request: Request):
+    """ElevenLabs post-call webhook. Verifies the HMAC signature, then checks the transcript
+    with Gemini in the background (ElevenLabs only needs a fast 200)."""
+    raw = await request.body()
+    if not call.signature_ok(raw, request.headers.get("elevenlabs-signature"), os.getenv("ELEVENLABS_WEBHOOK_SECRET")):
+        raise HTTPException(401, "invalid or missing ElevenLabs signature")
+    event = json.loads(raw)
+    data = event.get("data") or {}
+    task_id = ((data.get("conversation_initiation_client_data") or {}).get("dynamic_variables") or {}).get("task_id")
+    if task_id != S.task_id:
+        return {"ok": True, "ignored": "call from another task"}  # e.g. a call from before a demo reset
+    if event.get("type") == "post_call_transcription":
+        transcript = call.transcript_text(data.get("transcript") or [])
+
+        async def check_and_finish():
+            await finish_call(await verify.check_call(transcript, call.reported_outcome(data)), None)
+        run_later(check_and_finish())
+    elif event.get("type") == "call_initiation_failure":
+        run_later(finish_call({"held": False, "verified": False, "issues": ["the call did not connect"]}, None))
     return {"ok": True}
 
 

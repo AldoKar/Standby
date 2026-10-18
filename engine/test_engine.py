@@ -117,6 +117,86 @@ def test_merchant_payment_request(c):
     c.post("/demo/reset")
 
 
+def test_call_outcome_verification(c):
+    """The model is faked here; the real call is tried with `python -m app.verify`."""
+    from app import verify
+    reported = {"held": True, "door_code": "4417", "contact": "Maria", "fee_usd": 40}
+    real = (verify.enabled, verify.extract)
+    try:
+        verify.enabled = lambda: True
+
+        # The model confirms and the code was said: shown on the glasses
+        async def ok(transcript, rep):
+            return {**rep, "verified": True, "issues": [], "summary": "Room held."}
+        verify.extract = ok
+        c.post("/demo/reset")
+        r = c.post("/call/completed", json={**reported, "transcript": "Clerk: Door code is 4417."}).json()
+        assert r["outcome"]["verified"] and c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code 4417"]
+
+        # SPEC #6: code retracted, the model marks it unverified: no code on the glasses
+        async def retracted(transcript, rep):
+            return {**rep, "door_code": None, "verified": False, "issues": ["code retracted"], "summary": ""}
+        verify.extract = retracted
+        c.post("/call/completed", json={**reported, "transcript": "Clerk: It's 4417... never mind."})
+        assert c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code on phone"]
+
+        # The model claims verified, but the code was never spoken: code still blocks it
+        async def made_up(transcript, rep):
+            return {**rep, "door_code": "9999", "verified": True, "issues": [], "summary": ""}
+        verify.extract = made_up
+        r = c.post("/call/completed", json={**reported, "transcript": "Clerk: Door code is 4417."}).json()
+        assert r["outcome"]["door_code"] is None and not r["outcome"]["verified"]
+
+        # Model down: the outcome is never verified, so no code is shown
+        async def down(transcript, rep):
+            raise RuntimeError("verification stopped: refusal")
+        verify.extract = down
+        r = c.post("/call/completed", json={**reported, "transcript": "Clerk: Door code is 4417."}).json()
+        assert not r["outcome"]["verified"]
+        assert c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code on phone"]
+    finally:
+        verify.enabled, verify.extract = real
+        c.post("/demo/reset")
+
+
+def test_elevenlabs_webhook(c):
+    import hashlib, hmac, json as _json
+    from app import verify
+    secret = os.environ["ELEVENLABS_WEBHOOK_SECRET"] = "whsec_test"
+    c.post("/demo/reset")
+    c.post("/tasks", json={})
+    task_id = c.get("/state").json()["task_id"]
+
+    def send(task, sig_secret=secret, ts=None):
+        body = _json.dumps({"type": "post_call_transcription", "data": {
+            "transcript": [{"role": "agent", "message": "Hi, I'm an AI assistant calling for Alex."},
+                           {"role": "user", "message": "Room is held. Door code is 4417."}],
+            "conversation_initiation_client_data": {"dynamic_variables": {"task_id": task}},
+            "analysis": {"data_collection_results": {"held": {"value": True}, "door_code": {"value": "4417"}}}}})
+        t = str(ts or int(time.time()))
+        sig = hmac.new(sig_secret.encode(), f"{t}.{body}".encode(), hashlib.sha256).hexdigest()
+        return c.post("/call/webhook", content=body, headers={"elevenlabs-signature": f"t={t},v0={sig}"})
+
+    assert send(task_id, sig_secret="wrong").status_code == 401  # forged
+    assert send(task_id, ts=int(time.time()) - 3600).status_code == 401  # replayed after 30 min
+    assert send("task-old").json().get("ignored")  # a call from before a reset
+
+    real = (verify.enabled, verify.extract)
+    try:
+        verify.enabled = lambda: True
+
+        async def ok(transcript, rep):
+            assert "Clerk: Room is held. Door code is 4417." in transcript
+            return {**rep, "contact": None, "fee_usd": None, "verified": True, "issues": [], "summary": ""}
+        verify.extract = ok
+        assert send(task_id).status_code == 200
+        s = wait_for(c, "resolved")
+        assert s["screen"]["lines"] == ["Room held", "Door code 4417"]
+    finally:
+        verify.enabled, verify.extract = real
+        c.post("/demo/reset")
+
+
 if __name__ == "__main__":
     with TestClient(app) as client:
         test_glasses_flow(client)
@@ -124,4 +204,6 @@ if __name__ == "__main__":
         test_policy_denies_over_budget(client)
         test_policy_hostile_cases(client)
         test_merchant_payment_request(client)
+        test_call_outcome_verification(client)
+        test_elevenlabs_webhook(client)
     print("engine ok")
