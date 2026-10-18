@@ -203,9 +203,17 @@ TOOLS = [
 llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY from the environment
 http = httpx.AsyncClient(base_url=ENGINE_URL, timeout=20.0)
 
+AGENT_SEED = os.getenv("AGENT_SEED")
+if not AGENT_SEED:
+    raise SystemExit(
+        "AGENT_SEED is not set. It decides the agent's address on Agentverse: the "
+        "registered Handle It agent is agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf. "
+        "Put that seed in .env (never in git) before starting the agent."
+    )
+
 agent = Agent(
     name="handle-it",
-    seed=os.getenv("AGENT_SEED", "REDACTED_AGENT_SEED"),
+    seed=AGENT_SEED,
     port=int(os.getenv("ORCHESTRATOR_PORT", "8001")),
     mailbox=True,
     publish_agent_details=True,
