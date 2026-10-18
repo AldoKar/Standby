@@ -80,6 +80,15 @@ cd agents && python test_agents.py --live   # also drives Claude end to end
 
 Needs the engine running. Run it before opening a PR, like `engine/test_engine.py`.
 
+To drive the agent by hand without Agentverse or ASI:One — useful for rehearsing the demo,
+and the backup if asi1.ai misbehaves on the day:
+
+```bash
+cd agents && python chat_local.py
+```
+
+It talks to the running orchestrator over the real Chat Protocol and prints the cards.
+
 ## How it works
 
 ASI:One → Chat Protocol → orchestrator → REST → engine.
