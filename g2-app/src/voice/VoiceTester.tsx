@@ -22,7 +22,7 @@ export function VoiceTester({ engine }: { engine: Engine }) {
         className="voice-input"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder='e.g. "yes, book it" or "show me another flight"'
+        placeholder='e.g. "yes, book it" or "the Alaska one"'
         autoComplete="off"
       />
       <button type="submit">Send</button>

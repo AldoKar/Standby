@@ -34,8 +34,8 @@ def test_glasses_flow(c):
     verdicts = {o["airline"]: o["verdict"] for o in s["options"]}
     assert verdicts == {"United": "rejected", "American": "rejected", "Delta": "pick", "Alaska": "ok", "Southwest": "ok"}
     # budget consent: the limit comes from tonight's fares ($215 cheapest + extras, rounded up)
-    assert s["screen"]["lines"] == ["UA183 cancelled", "Fix it for up to $300?", "Tap = yes, Swipe = no"]
-    assert s["screen"]["gestures"] == {"press": "fix", "swipe_down": "no"}
+    assert s["screen"]["lines"] == ["UA183 cancelled", "Fix it for up to $300?", "Tap = yes, Hold = budget, Swipe = no"]
+    assert s["screen"]["gestures"] == {"press": "fix", "hold": "budget", "swipe_down": "no"}
     assert c.post("/input", json={"gesture": "press"}).json()["stage"] == "offer"
     s = c.get("/state").json()
     assert s["ledger"]["mandate"]["budget_usd"] == 300
@@ -273,9 +273,30 @@ def test_voice_commands(c):
     assert r["intent"] == "fix" and r["via"] == "keywords" and r["handled"] and r["stage"] == "offer"
     # approving a spend by voice never books: it asks for a tap
     r = say("okay", "flight_list")
-    assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
+    assert r["intent"] == "choose" and r["index"] == 0 and r["confirm_required"] and not r["handled"]
     assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
-    # the glasses' native list owns the selection: "another one" is not a command there (scroll instead)
+    # picking a flight by voice: Ollama names the row, the engine changes nothing, a tap still books
+    import asyncio
+    from app import voice
+    real_row, asked = voice._ollama_row, []
+
+    async def fake_row(transcript, choices, highlighted):
+        asked.append((transcript, [o["airline"] for o in choices], highlighted))
+        return (1, 0.95) if "alaska" in transcript.lower() else (-1, 0.9)
+    voice._ollama_row = fake_row
+    try:
+        r = say("let's do the Alaska one", "flight_list")
+        assert r["intent"] == "choose" and r["index"] == 1 and r["confirm_required"] and r["model"].startswith("ollama/")
+        assert asked[-1] == ("let's do the Alaska one", ["Delta", "Alaska", "Southwest"], 0), asked
+        assert say("what's the weather like", "flight_list")["intent"] == "unknown"
+        assert c.get("/state").json()["pick"]["airline"] == "Delta"  # nothing moved, nothing booked
+    finally:
+        voice._ollama_row = real_row
+    # Ollama down (no server in tests): a plain keyword match keeps it working, and says Ollama failed
+    r = say("book the Alaska flight", "flight_list")
+    assert r["intent"] == "choose" and r["index"] == 1 and "ollama failed" in r["reason"], r
+    assert say("the cheapest one", "flight_list")["index"] == 0
+    assert say("the ten o'clock", "flight_list")["index"] == 2
     assert say("show me another one", "flight_list")["intent"] == "unknown"
     c.post("/input", json={"gesture": "select", "screen_id": "flight_list", "index": 1})
     s = c.get("/state").json()
@@ -290,9 +311,74 @@ def test_voice_commands(c):
     assert r["intent"] == "reject" and r["handled"]
     wait_for(c, "resolved")
     assert c.get("/ledger").json()["spent_usd"] == 239
-    # no audio and no transcript
+    # end screens close by voice, the call view hides / shows on the glasses (engine only reports it)
+    for screen in ("resolved", "not_held", "call_failed", "claim_submitted", "answer"):
+        assert asyncio.run(voice.classify("got it", screen, []))[:3] == ("dismiss", 1.0, "keywords"), screen
+    assert asyncio.run(voice.classify("hide it", "calling", []))[0] == "hide" and voice.is_local("calling", "hide")
+    assert asyncio.run(voice.classify("show the call", "call_resumed", []))[0] == "show"
+    assert not voice.is_local("fee_request", "approve")
+    # starting the flow is tap-only: no voice on `ready`, even "start"
     c.post("/demo/reset")
+    assert say("start", "ready")["reason"] == "no voice commands on ready"
+    assert c.get("/state").json()["stage"] == "ready"
+    # no audio and no transcript
     assert c.post("/voice", json={"screen_id": "ready"}).json()["reason"] == "no voice commands on ready"
+    # "OK" on the outcome screen closes it like a tap (back to Ready)
+    c.post("/input", json={"gesture": "press"})
+    c.post("/voice", json={"screen_id": "cancelled", "transcript": "yes"})
+    c.post("/input", json={"gesture": "hold", "screen_id": "flight_list"})
+    wait_for(c, "fee")
+    say("no", "fee_request")
+    wait_for(c, "resolved")
+    screen = c.get("/state").json()["screen"]["screen_id"]
+    if screen in ("resolved", "not_held"):  # the claim screen may already have replaced it
+        r = say("ok thanks", screen)
+        assert r["intent"] == "dismiss" and r["handled"], r
+    c.post("/demo/reset")
+
+
+def test_budget_change(c):
+    """On the budget consent the traveler can set another budget: Hold (or "change the budget") asks for the
+    amount; saying it shows "Budget $X?" for a tap (confirm) or a swipe (roll back). The confirm is tap-only."""
+    say = lambda text, screen: c.post("/voice", json={"screen_id": screen, "transcript": text}).json()  # noqa: E731
+    screen = lambda: c.get("/state").json()["screen"]  # noqa: E731
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})
+    s = screen()
+    assert s["screen_id"] == "cancelled" and s["gestures"] == {"press": "fix", "hold": "budget", "swipe_down": "no"}
+    proposed = c.get("/state").json()["proposal"]["limit_usd"] if "proposal" in c.get("/state").json() else 300
+    # hold → say an amount; tap = back, nothing changed
+    c.post("/input", json={"gesture": "hold", "screen_id": "cancelled"})
+    assert screen()["screen_id"] == "budget_ask"
+    c.post("/input", json={"gesture": "press", "screen_id": "budget_ask"})
+    assert screen()["screen_id"] == "cancelled"
+    # say it straight on the consent: confirm screen with the price, nothing applied yet
+    r = say("make it four hundred fifty", "cancelled")
+    assert r["intent"] == "budget" and r["handled"], r
+    s = screen()
+    assert s["screen_id"] == "budget_confirm" and s["lines"][:2] == ["Budget $450?", f"Was ${proposed:g}"], s
+    assert s["gestures"] == {"press": "confirm", "swipe_down": "roll back"}
+    assert c.get("/ledger").json()["mandate"]["budget_usd"] != 450
+    # the confirm is tap-only: "yes" by voice does nothing there
+    assert say("yes", "budget_confirm")["reason"] == "no voice commands on budget_confirm"
+    # roll back → the proposed budget again
+    c.post("/input", json={"gesture": "swipe_down", "screen_id": "budget_confirm"})
+    s = screen()
+    assert s["screen_id"] == "cancelled" and f"${proposed:g}?" in s["lines"][1]
+    # hold, say "$250" on the ask screen, tap to confirm: the budget is 250 and the flights follow it
+    c.post("/input", json={"gesture": "hold", "screen_id": "cancelled"})
+    assert say("two fifty", "budget_ask")["handled"]
+    assert screen()["lines"][0] == "Budget $250?"
+    c.post("/input", json={"gesture": "press", "screen_id": "budget_confirm"})
+    assert c.get("/ledger").json()["mandate"]["budget_usd"] == 250
+    s = c.get("/state").json()
+    assert s["stage"] == "offer" and all(o["price_usd"] <= 250 for o in s["options"] if o["verdict"] != "rejected")
+    # below the cheapest fare: kept at the cheapest, and the screen says why
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})
+    say("100 dollars", "cancelled")
+    s = screen()
+    assert s["screen_id"] == "budget_confirm" and s["lines"][1].startswith("Lowest fare $"), s
     c.post("/demo/reset")
 
 
@@ -341,8 +427,9 @@ def test_voice_model_fallback(c):
         c.post("/demo/reset")
         c.post("/input", json={"gesture": "press"})
         c.post("/input", json={"gesture": "press"})
+        # (the flight list asks Ollama, not Jev/Haiku: with Ollama down and no flight named, it says so)
         reply = c.post("/voice", json={"screen_id": "flight_list", "transcript": phrase}).json()
-        assert reply["intent"] == "unknown" and reply["reason"].startswith("intent model failed")
+        assert reply["intent"] == "unknown" and reply["reason"].startswith("ollama failed")
         # 5. The keyword path still answers instantly, no model at all
         calls.clear()
         assert asyncio.run(voice.classify("okay", "booking_offer", lines))[:3] == ("approve", 1.0, "keywords")
@@ -713,15 +800,30 @@ def test_trip_claim(c):
         s = c.get("/state").json()
         assert s["claim"]["status"] == "ready" and s["ledger"]["claims"] == []
 
-        # dismissing the outcome before the claim shows cancels it
+        # a tap on the outcome while the claim is being drafted goes to the claim (it used to drop it)
         agent.enabled = lambda: False
-        engine.CLAIM_DELAY_S = 0.5
+        engine.CLAIM_DELAY_S = 5
         c.post("/demo/reset")
         finish_trip()
-        wait_for(c, "resolved")
-        c.post("/input", json={"gesture": "press"})
-        time.sleep(0.8)
-        assert c.get("/state").json()["claim"] is None
+        s = wait_for(c, "resolved")
+        assert s["screen"]["gestures"] == {"press": "next"} and s["screen"]["clear_after_s"] is None
+        started = time.time()
+        c.post("/input", json={"gesture": "press", "screen_id": s["screen"]["screen_id"]})
+        s = wait_screen("claim_ready", timeout=3)  # right away, not after the 5 s delay
+        assert time.time() - started < 3 and s["claim"]["total_usd"] == 66 and s["claim"]["status"] == "ready"
+        # by voice too ("OK" on the outcome = the same tap)
+        c.post("/demo/reset")
+        finish_trip()
+        s = wait_for(c, "resolved")
+        r = c.post("/voice", json={"screen_id": s["screen"]["screen_id"], "transcript": "ok"}).json()
+        assert r["handled"], r
+        assert wait_screen("claim_ready", timeout=3)["claim"]["total_usd"] == 66
+        # nothing to claim (no spends): a tap on the outcome still ends the trip
+        engine.CLAIM_DELAY_S = 0.1
+        c.post("/demo/reset")
+        engine.S.stage = "resolved"
+        engine.start_claim()
+        assert not engine.S.claim_drafting
     finally:
         engine.CLAIM_DELAY_S, agent.enabled, agent.run = real
         c.post("/demo/reset")
@@ -824,6 +926,7 @@ CASES = [
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
     ("Voice: Jev first, Haiku fallback, failures reported", test_voice_model_fallback),
+    ("Budget: the traveler sets another one, confirmed with a tap or rolled back", test_budget_change),
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
     ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),

@@ -97,6 +97,34 @@ curl -N https://DOMAIN/events
 
 Give the team `https://DOMAIN` as the engine URL (G2 app, agents, dashboard).
 
+## 8. Host the glasses page ("Link glasses" QR)
+
+The glasses app is a web page. Hosted here, its "Link glasses" button shows a QR with its own address
+(`https://glasses.DOMAIN`), so the Even app can open Standby on the G2 from any network, no laptop needed.
+The Caddyfile above already serves it; it only needs the built files.
+
+On the laptop (the server has no Node):
+
+```powershell
+cd g2-app
+npm install
+npm run build
+scp -r dist root@IP:/opt/handle-it/g2-app/
+```
+
+Then on the server (the `sed` line copies the Caddyfile again, for servers set up before this step existed):
+
+```bash
+chown -R handleit:handleit /opt/handle-it/g2-app/dist
+sed "s/DOMAIN/YOUR_DOMAIN/" /opt/handle-it/engine/deploy/Caddyfile > /etc/caddy/Caddyfile
+systemctl reload caddy
+```
+
+Open `https://glasses.DOMAIN`, press **Link glasses** and scan the QR with the Even app. The page talks to the
+engine at `https://DOMAIN` (baked in by `vite.config.ts`). Rebuild and copy `dist` again after every app change;
+`git pull` doesn't touch it (it's not in git). The QR is for testing on the glasses: real users install the `.ehpk`
+from Even Hub. Anyone with the address can use the page's demo buttons, so share it only with the team and judges.
+
 ## Updating after a push
 
 As root (the deploy key belongs to root):

@@ -37,12 +37,20 @@ export class UtteranceDetector {
   private speechMs = 0
   private readonly onUtterance: (u: Utterance) => void
   private readonly onSpeechStart?: () => void
+  private readonly onDiscard?: () => void
   private readonly endSilenceMs: number
   private readonly maxMs: number
 
-  constructor(onUtterance: (u: Utterance) => void, onSpeechStart?: () => void, timing: DetectorTiming = {}) {
+  /** onDiscard: speech started but was too short to count (a cough, a click). */
+  constructor(
+    onUtterance: (u: Utterance) => void,
+    onSpeechStart?: () => void,
+    timing: DetectorTiming = {},
+    onDiscard?: () => void,
+  ) {
     this.onUtterance = onUtterance
     this.onSpeechStart = onSpeechStart
+    this.onDiscard = onDiscard
     this.endSilenceMs = timing.endSilenceMs ?? END_SILENCE_MS
     this.maxMs = timing.maxMs ?? MAX_UTTERANCE_MS
   }
@@ -116,7 +124,10 @@ export class UtteranceDetector {
     const voicedMs = this.speechMs - this.silentMs
     const chunks = this.speech
     this.reset()
-    if (voicedMs < MIN_SPEECH_MS) return // a cough or a click
+    if (voicedMs < MIN_SPEECH_MS) {
+      this.onDiscard?.() // a cough or a click
+      return
+    }
     const total = chunks.reduce((n, c) => n + c.length, 0)
     const pcm = new Int16Array(total)
     let at = 0

@@ -85,7 +85,10 @@ export async function handleGesture(engine: Engine, gesture: Gesture): Promise<v
   // A tap on an approval screen opens the confirm step instead of being dropped.
   if (gesture === 'press' && screen.tapConfirms) {
     if (!settled(screen, gesture, SETTLE_MS.press)) return
-    await selecting // the engine must have the row the wearer sees before the dialog names it
+    // The engine must have the row the wearer sees before the dialog names it. After a voice choice the
+    // engine may be on another row than the native list ("the Alaska one", then back): realign it first.
+    if (screen.list) handleListSelect(engine)
+    await selecting
     openConfirm(currentScreen())
     return
   }
@@ -139,14 +142,52 @@ export function handleListSelect(engine: Engine): void {
   })
 }
 
+const CHOOSE_WAIT_MS = 2500 // the engine's list with the chosen row highlighted should arrive by then
+
+/**
+ * Voice picked a flight on the list ("the Alaska one"). The glasses' native list can't be moved from code,
+ * so: tell the engine (`select`, a new approval for that flight), wait for its list with that row
+ * highlighted, then open the confirm dialog naming that flight. Booking it is still a tap.
+ */
+export function chooseRow(engine: Engine, index: number): void {
+  selecting = selecting.then(async () => {
+    const screen = currentScreen()
+    if (!screen.list) return
+    if (engineHighlight(screen.lines) !== index) {
+      try {
+        const r = await engine.input('select', screen.id, index)
+        if (!r.handled) {
+          log(`voice choice: engine ignored select ${index}${r.reason ? `: ${r.reason}` : ''}`)
+          return
+        }
+      } catch (err) {
+        log(`voice choice: POST /input select failed: ${(err as Error).message}`)
+        return
+      }
+      const until = performance.now() + CHOOSE_WAIT_MS
+      while (performance.now() < until && !(currentScreen().list && engineHighlight(currentScreen().lines) === index)) {
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
+    const now = currentScreen()
+    if (!now.list || engineHighlight(now.lines) !== index) {
+      log(`voice choice: row ${index} never showed as highlighted; not opening the dialog`)
+      return
+    }
+    log(`voice choice: row ${index} → confirm`)
+    openConfirm(now, index)
+  })
+}
+
 /**
  * Show the local "Tap again to confirm" step for an approval screen. Used by the first tap and by a
  * voice "yes" on a spend (spends always need a tap). Times out back to the offer.
+ * `row`: on the list, the flight to name (a voice choice); default = the row the wearer has selected.
  */
-export function openConfirm(screen: HudScreen): void {
+export function openConfirm(screen: HudScreen, row?: number): void {
   const original: HudScreen = { ...screen, voice: undefined }
   // On the list, remember the row now: the dialog replaces the list (and its native selection).
-  const index = screen.list ? selectedRow(screen) : undefined
+  const index = screen.list ? (row ?? selectedRow(screen)) : undefined
   const gen = showScreen(confirmScreen(original, index))
   setTimeout(() => {
     if (showScreenIfCurrent(gen, original)) log('confirm timed out, back to the offer')
