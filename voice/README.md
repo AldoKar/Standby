@@ -4,11 +4,13 @@ The agent phones the guesthouse, which has no API, says it is an AI in its first
 
 ## Setup
 
+Step by step in [`setup.md`](setup.md). In short:
+
 1. In ElevenLabs, create an Agent with the prompt and first message below.
 2. Buy or import a Twilio number into ElevenLabs (native Twilio integration). Upgrade the Twilio account ($20) so callees don't hear the trial message.
 3. Add the two server tools from `tools.json`, pointing at the engine's public URL.
-4. Set `CALL_MODE=elevenlabs` plus the ElevenLabs variables in `engine/.env`. The engine places the call itself after booking, using `engine/app/call.py`; check that request against the current ElevenLabs docs.
-5. Post-call: map ElevenLabs' post-call webhook (or a final tool call) to `POST /call/completed` with `{held, door_code, contact, fee_usd, transcript_url, verified}`.
+4. Set `CALL_MODE=elevenlabs` plus the ElevenLabs variables in `engine/.env`. The engine places the call itself after booking, using `engine/app/call.py` (checked against the ElevenLabs docs on Oct 17; see [`NEEDS-FROM-P1.md`](NEEDS-FROM-P1.md)).
+5. Post-call: point ElevenLabs' post-call webhook at `https://<engine>/call/webhook` and add the data collection fields `held`, `door_code`, `contact`, `fee_usd`. The engine checks them against the transcript with Claude and only then shows the door code.
 
 ## Dynamic variables
 
@@ -30,12 +32,19 @@ Rules:
   a secure link and continue.
 - Any extra cost, fee or change you did not already have approval for: say
   "One moment, let me check with him", call request_approval with the amount and reason,
-  then call check_approval every 3 seconds until the status is not "pending", for up to 30 seconds.
+  then call check_approval with the approval_id until the status is not "pending", at most 4 times.
+  Each check waits several seconds. If a check comes back pending, say one short line such as
+  "Still checking with him, thanks for waiting" before the next check.
   - approved: agree and continue.
   - rejected or denied: politely decline the fee and ask whether the room can still be held.
-  - still pending after 30 seconds: say you will call back, and end the call.
+  - still pending after 4 checks: say you will call back, and end the call.
+- The line may be noisy. If what you hear is unclear, very short or sounds like background chatter,
+  don't apologize or restart your introduction; ask once, briefly, "Sorry, could you say that again?"
+  and continue.
+- Say confirmation numbers and door codes digit by digit, for example "4-8-2-1-3".
 - Keep it short: at most 3 exchanges with the clerk.
 - Before hanging up, repeat back what was agreed: room held or not, fee, door code, contact name.
+  Then end the call.
 ```
 
 ## Fallbacks
