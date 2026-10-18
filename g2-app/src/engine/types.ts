@@ -1,0 +1,66 @@
+// TypeScript view of contract/events.md and contract/api.md (the source of truth is contract/).
+// If the contract changes, update this file to match; never the other way around.
+
+export type Gesture = 'press' | 'hold' | 'swipe_down'
+
+/** `hud.screen`: the engine writes all copy; the glasses only render it. */
+export interface EngineScreen {
+  screen_id: string
+  lines: string[] // at most 3; empty = blank screen
+  gestures: Partial<Record<Gesture, string>> // gestures that do something on this screen
+  clear_after_s: number | null
+}
+
+export interface RankedOption {
+  id: string
+  airline: string
+  flight: string
+  departs: string
+  arrives: string
+  day: string
+  price_usd: number
+  mcc: string
+  verdict: 'pick' | 'ok' | 'rejected'
+  reason: string
+}
+
+export interface EventData {
+  'state.snapshot': { task_id: string | null; stage: string; screen: EngineScreen }
+  'hud.screen': EngineScreen
+  'flight.cancelled': {
+    flight: string
+    route: string
+    airline_offer: { airline: string; flight: string; departs: string; arrives: string; day: string; price_usd: number }
+    source: string
+  }
+  'options.ranked': { options: RankedOption[] }
+  'mandate.checked': { kind: string; amount: number; remaining: number; result: 'allow' | 'ask' | 'deny'; reason: string }
+  'approval.requested': { approval_id: string; kind: 'booking' | 'fee'; amount: number; merchant: string; reason: string }
+  'approval.granted': { approval_id: string; kind: 'booking' | 'fee'; via: string }
+  'approval.rejected': { approval_id: string; kind: 'booking' | 'fee'; via: string }
+  'payment.executed': { amount: number; merchant: string; mcc: string; token_id: string; reference: string }
+  'offer.declined': { airline: string; flight: string; refund_usd: number; status: string }
+  'vault.updated': { type: 'boarding_pass' | 'call_transcript'; flight?: string }
+  'cutoff.detected': { place: string; closes_at: string; arrival: string; eta: string }
+  'call.started': { to: string; purpose: string; mode: 'mock' | 'elevenlabs' }
+  'call.completed': {
+    outcome: { held: boolean; fee_usd?: number; door_code?: string | null; contact?: string; error?: string }
+    transcript_url: string | null
+    verified: boolean
+  }
+  'task.resolved': { flight: string | null; lodging: { held: boolean; door_code: string | null } }
+  'demo.reset': Record<string, never>
+}
+
+export type EngineEventType = keyof EventData
+
+/** Discriminated union: `switch (e.type)` narrows `e.data`. */
+export type EngineEvent = {
+  [K in EngineEventType]: { type: K; ts: string; task_id: string | null; data: EventData[K] }
+}[EngineEventType]
+
+/** POST /input response. */
+export interface InputResult {
+  handled: boolean
+  stage: string
+}
