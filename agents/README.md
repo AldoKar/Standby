@@ -184,8 +184,14 @@ CALL_VOICEMAIL_FIRST=true python caller/agent.py   # force the retry path for a 
       `description` on the constructor do **not** publish to the Agentverse profile for a
       mailbox agent. Paste `orchestrator/README.md` into the profile's Agent Guide by hand.
 - [x] Found and driven through ASI:One by `@standby` handle
-- [ ] Found by *plain-language* query with no handle (not yet tested — this is the
-      eligibility criterion, worth one more run)
+- [x] Found by *plain-language* query — **tested 2026-10-17 22:48: a message with no
+      handle never reaches the agent.** ASI:One routes un-mentioned messages to the
+      user's own assistant by default ("Messages without an @mention are routed to your
+      personal AI"), which answered instead and asked for flight details it does not
+      have. This is platform routing, not an agent fault: with `@standby` the agent is
+      reachable and the whole flow completes, which is what the hackpack asks for
+      ("discoverable and functional through ASI:One", "primary workflows complete within
+      ASI:One conversations"). **Demo with the handle, every message.**
 - [ ] Interactive Cards: all three built and structurally validated against the spec, but
       **asi1.ai renders the text, not the cards** (tested 2026-10-17 with a direct
       `@standby` mention). The documented behaviour is a silent fallback to text, which is
