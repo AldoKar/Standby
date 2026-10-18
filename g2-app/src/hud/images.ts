@@ -125,7 +125,19 @@ function render(key: string, w: number, h: number): HTMLCanvasElement {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, w, h)
   const [type, name, arg] = key.split(':')
-  if (type === 'icon') drawIcon(ctx, name, arg === undefined ? null : Number(arg))
+  if (type === 'dot') {
+    // "dot:on" / "dot:off": the minimized call's live blink, a ~10 px dot in the top-left of a container
+    // that is bigger only to meet the glasses' 20 px minimum. Off = all black = nothing lit.
+    if (name === 'on') {
+      ctx.fillStyle = gray(BRIGHT)
+      ctx.beginPath()
+      ctx.arc(7, 7, 5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  } else if (type === 'icon') {
+    ctx.scale(w / 48, h / 48) // icons are drawn on a 48×48 grid; smaller slots (minimized call) scale down
+    drawIcon(ctx, name, arg === undefined ? null : Number(arg))
+  }
   else if (type === 'bar') drawBar(ctx, name, arg, h)
   return canvas
 }

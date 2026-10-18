@@ -9,7 +9,7 @@ import { SPINNER_FRAME_COUNT, WAVE_FRAME_COUNT } from './images'
 import type { HudScreen } from './screens'
 
 export type Animation = {
-  image: 'icon' | 'bar' // image container name in layout.ts
+  image: 'icon' | 'bar' | 'dot' // image container name in layout.ts
   frames: string[]
   restKey: string // static frame shown when the loop times out
   intervalMs: number
@@ -29,6 +29,20 @@ const range = (n: number, f: (i: number) => string) => Array.from({ length: n },
  */
 export function animationFor(s: HudScreen, latencyMs: number | null): Animation | null {
   const slow = latencyMs !== null && latencyMs > SLOW_IMAGE_MS
+
+  // 0. Minimized call: a 12×12 dot blinking slowly next to the corner icon, so the call reads as live.
+  //    Tiny image, ~1 update/s: runs for the whole call (calls outlast the 25 s loop cap), rests lit.
+  if (s.mini) {
+    return {
+      image: 'dot',
+      frames: ['dot:on', 'dot:off'],
+      restKey: 'dot:on',
+      intervalMs: slow ? 1000 : 700,
+      loop: true,
+      maxMs: 10 * 60_000,
+      optional: false,
+    }
+  }
 
   // 1. Airline call: the demo's hero moment, and no decision is pending.
   if (s.bar?.kind === 'wave') {

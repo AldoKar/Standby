@@ -192,6 +192,36 @@ function pageModel(plan: PagePlan) {
   }
 }
 
+// Host limits (SKILLEVEN.md). Breaking ANY of them fails the whole page: the lens goes blank and the host may
+// close the app. The simulator doesn't enforce them, so check here before sending.
+const IMAGE_W = [20, 288]
+const IMAGE_H = [20, 144]
+const MAX_TEXTS = 8
+const MAX_IMAGES = 4
+const MAX_CONTAINERS = 12
+
+/** What's wrong with a page for the real glasses (empty = fine). */
+export function planProblems(plan: PagePlan): string[] {
+  const out: string[] = []
+  const total = plan.texts.length + plan.images.length
+  if (total < 1 || total > MAX_CONTAINERS) out.push(`${total} containers (1–${MAX_CONTAINERS})`)
+  if (plan.texts.length > MAX_TEXTS) out.push(`${plan.texts.length} text containers (max ${MAX_TEXTS})`)
+  if (plan.images.length > MAX_IMAGES) out.push(`${plan.images.length} image containers (max ${MAX_IMAGES})`)
+  if (plan.texts.filter((t) => t.capture).length !== 1) out.push('exactly one text container must capture events')
+  for (const i of plan.images) {
+    if (i.w < IMAGE_W[0] || i.w > IMAGE_W[1] || i.h < IMAGE_H[0] || i.h > IMAGE_H[1]) {
+      out.push(`image ${i.name} ${i.w}×${i.h} (w ${IMAGE_W.join('–')}, h ${IMAGE_H.join('–')})`)
+    }
+  }
+  const zs = [...plan.texts, ...plan.images].map((c) => c.z)
+  if (new Set(zs).size !== zs.length) out.push('z orders must be unique')
+  return out
+}
+
+// The last page the glasses accepted: if a new one is rejected, go back to it instead of leaving the lens
+// empty (an empty page with nothing capturing events can close the app).
+let lastGood: PagePlan | null = null
+
 function textKey(content: string, color: number) {
   return `${color}|${content}`
 }
@@ -209,9 +239,20 @@ async function apply(plan: PagePlan): Promise<void> {
   if (!b) return
 
   if (!applied || applied.signature !== plan.signature) {
+    const problems = planProblems(plan)
+    if (problems.length) {
+      // Never send a page the glasses would reject: keep what's on the lens.
+      log(`page ${plan.signature} NOT sent, invalid for the glasses: ${problems.join('; ')}`)
+      return
+    }
     const ok = await withTimeout(b.rebuildPageContainer(new RebuildPageContainer(pageModel(plan))), CALL_TIMEOUT_MS, 'rebuildPageContainer')
     if (!ok) {
       log(`rebuildPageContainer returned false (${plan.signature})`)
+      applied = null // the native page is in an unknown state
+      if (lastGood && lastGood !== plan && !desired) {
+        log(`restoring the last page that worked (${lastGood.signature})`)
+        desired = lastGood // flush() picks it up right away
+      }
       return
     }
     log(`page rebuilt: ${plan.signature}`)
@@ -248,6 +289,7 @@ async function apply(plan: PagePlan): Promise<void> {
     if (result === ImageRawDataUpdateResult.success) state.images.set(i.id, i.key)
     else log(`updateImageRawData(${i.name}, ${i.key}) → ${result}`)
   }
+  lastGood = plan
 }
 
 /** Serial render loop: one bridge write sequence at a time, intermediate plans are dropped. */
@@ -300,7 +342,8 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
     }
     log('bridge ready')
 
-    const plan = desired ?? fallback
+    // The first page must be valid or the app never shows; fall back to the boot screen if it isn't.
+    const plan = desired && planProblems(desired).length === 0 ? desired : fallback
     try {
       const result = await withTimeout(
         bridge.createStartUpPageContainer(new CreateStartUpPageContainer(pageModel(plan))),
@@ -316,6 +359,7 @@ export function initGlasses(fallback: PagePlan): Promise<BridgeStatus> {
       return 'error'
     }
     markBuilt(plan)
+    lastGood = plan
 
     bridge.onEvenHubEvent((event) => {
       // Mic frames arrive on the same channel as gestures; they are never gestures.

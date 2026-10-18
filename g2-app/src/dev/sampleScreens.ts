@@ -21,6 +21,7 @@ export const SAMPLE_SCREENS: Record<string, EngineScreen> = {
   only_option: s('only_option', ['Only option tonight', 'Delta 9:15 PM', 'Hold to book'], { hold: 'approve' }),
   booked: s('booked', ['Booked · pass saved']),
   calling: s('calling', ['Desk closes 11:00 PM', 'You land 10:40', 'Calling guesthouse']),
+  call_resumed: s('call_resumed', ['+$40 OK', 'Finishing the call']),
   fee_request: s('fee_request', ['+$40 late check-in', 'Guesthouse asks', 'Hold = OK, Swipe = no'], {
     hold: 'approve',
     swipe_down: 'reject',

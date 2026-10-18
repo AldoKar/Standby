@@ -7,6 +7,7 @@
 import { log } from '../debug/logger'
 import type { Engine } from '../engine/client'
 import type { Gesture } from '../engine/types'
+import { isCallScreen, toggleCallView } from './callView'
 import { currentGeneration, currentScreen, screenAgeMs, showScreen, showScreenIfCurrent } from './controller'
 import { confirmScreen, gestureFailedScreen, type HudScreen } from './screens'
 
@@ -48,6 +49,13 @@ export async function handleGesture(engine: Engine, gesture: Gesture): Promise<v
     else if (gesture !== 'hold') askHandlers?.cancel()
     return
   }
+
+  // During a call, long press minimizes it to a corner icon / brings it back. Local only, never sent.
+  if (gesture === 'hold' && (screen.mini || isCallScreen(screen))) {
+    if (settled(screen, gesture, SETTLE_MS.hold)) toggleCallView()
+    return
+  }
+  if (screen.mini) return // minimized: only the long press does something
 
   // Long press where the engine offers "ask" (free mode) = push-to-talk. Never sent to /input.
   if (gesture === 'hold' && screen.gestures.hold === 'ask') {

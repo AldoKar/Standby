@@ -66,7 +66,29 @@ const VOICE_HEADER: Partial<Record<VoiceState, string>> = {
 // blank lens (quiet by default). Fixed geometry: it never forces a page rebuild between normal screens.
 const MARGIN = { x: 4, y: 4, w: LENS_W - 8, h: LENS_H - 8, level: 5, radius: 12 }
 
+// Minimized call: a small phone icon in the top-right corner, nothing else lit. No margin (quiet like a blank
+// lens). The capture container stays (blank) so the long press that restores the call still arrives; it sits
+// away from the icon so it can't cover it.
+const MINI_ICON = { x: LENS_W - 16 - 12 - 32, y: 14, size: 32 }
+// A small blinking dot at the icon's top-right, like an apostrophe: the call is still live.
+// The container must be at least 20×20 (the glasses reject smaller images and then the WHOLE page fails:
+// blank lens, app closed). The dot itself is ~10 px, drawn in the container's top-left corner
+// (images.ts), so it sits where it should; the rest of the container is black = unlit. No overlap with the icon.
+const MINI_DOT = { x: MINI_ICON.x + MINI_ICON.size + 1, y: MINI_ICON.y - 5, size: 20 }
+
+function planMinimized(): PagePlan {
+  return {
+    signature: 'mini',
+    texts: [{ id: 3, name: 'main', x: 84, y: 84, w: 472, h: 80, color: BRIGHT, content: BLANK, capture: true, z: 3 }],
+    images: [
+      { id: 6, name: 'icon', x: MINI_ICON.x, y: MINI_ICON.y, w: MINI_ICON.size, h: MINI_ICON.size, key: 'icon:phone', z: 6 },
+      { id: 7, name: 'dot', x: MINI_DOT.x, y: MINI_DOT.y, w: MINI_DOT.size, h: MINI_DOT.size, key: 'dot:on', z: 7 },
+    ],
+  }
+}
+
 export function planScreen(s: HudScreen): PagePlan {
+  if (s.mini) return planMinimized()
   const texts: TextSpec[] = []
   const blank = s.lines.length === 0
   if (s.alert) {
