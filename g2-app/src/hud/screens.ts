@@ -18,6 +18,7 @@ export type HudScreen = {
   footer?: string // dim, used when there are no buttons
   icon?: HudIcon
   alert?: boolean // bordered card around the main zone
+  dialog?: boolean // confirm dialog: no icon, the question and its recap sit inside the card
   bar?: HudBar
   busy?: boolean // open-ended wait → dot spinner (not used by the current engine flow)
   choices?: HudChoice[] // rendered as one hint line: "Tap = book  ·  Swipe ↓ = other" (replaces `footer`)
@@ -121,15 +122,20 @@ export function fromEngine(s: EngineScreen): HudScreen {
 }
 
 /**
- * Local "tap again" step before an approval reaches the engine. Same facts on screen, so the wearer
- * confirms what they just read; swipe goes back without sending anything.
+ * Local "tap again" step before an approval reaches the engine, styled as a dialog: one question, plus a dim
+ * recap of what's being approved (the engine's own lines, verbatim) so nobody confirms a spend blind.
+ * Tap-only by design: voice never approves a spend. Swipe goes back without sending anything.
  */
 export function confirmScreen(of: HudScreen): HudScreen {
   const label = of.choices?.find((c) => c.gesture === 'tap')?.label ?? 'confirm'
   return {
-    ...of,
     id: `confirm:${of.id}`,
-    header: 'STANDBY · TAP AGAIN TO CONFIRM',
+    header: 'CONFIRM · ONLY TAP, NO VOICE',
+    icon: 'none',
+    alert: true, // the bright card = the dialog box
+    dialog: true,
+    lines: ['Are you sure?'],
+    detail: of.lines.join(' · '), // e.g. "Delta tonight 9:15 PM · $215 · lands 10:40"
     choices: [
       { label, gesture: 'tap' },
       { label: 'back', gesture: 'swipe' },

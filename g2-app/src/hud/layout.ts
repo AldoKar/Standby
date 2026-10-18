@@ -88,6 +88,10 @@ export function planScreen(s: HudScreen): PagePlan {
     })
   }
   const hasHint = Boolean(s.choices?.length)
+  // Dialog (confirm step): no icon, so the question and its recap start near the card's left edge.
+  const box = s.dialog
+    ? { x: 36, w: 516, mainY: 92, mainH: 40, detailY: 134, detailMax: 46 }
+    : { x: 84, w: 472, mainY: 84, mainH: 80, detailY: 158, detailMax: MAX_CHARS }
   texts.push(
     {
       id: 2,
@@ -103,12 +107,12 @@ export function planScreen(s: HudScreen): PagePlan {
     {
       id: 3,
       name: 'main',
-      x: 84,
-      y: 84,
+      x: box.x,
+      y: box.mainY,
       // Must never overflow: this container captures gestures, and an overflowing text container
       // shows a scroll bar and emits SCROLL events that would read as swipes.
-      w: 472,
-      h: 80,
+      w: box.w,
+      h: box.mainH,
       color: BRIGHT,
       content: s.lines.slice(0, 2).map((l) => clamp(l)).join('\n') || BLANK,
       capture: true, // exactly one container captures gestures
@@ -117,12 +121,12 @@ export function planScreen(s: HudScreen): PagePlan {
     {
       id: 4,
       name: 'detail',
-      x: 84,
-      y: 158,
-      w: 472,
+      x: box.x,
+      y: box.detailY,
+      w: box.w,
       h: 38,
       color: DIM,
-      content: (!s.bar && s.detail ? clamp(s.detail) : '') || BLANK,
+      content: (!s.bar && s.detail ? clamp(s.detail, box.detailMax) : '') || BLANK,
       z: 4,
     },
     {
@@ -138,13 +142,16 @@ export function planScreen(s: HudScreen): PagePlan {
     },
   )
 
-  const images: ImageSpec[] = [
-    { id: 6, name: 'icon', x: 24, y: 96, w: 48, h: 48, key: `icon:${s.icon ?? 'none'}`, z: 6 },
-  ]
+  // No icon container in the dialog: even an empty (black) image sits above the text and hides
+  // the start of "Are you sure?" (z-order), so it must not exist there at all.
+  const images: ImageSpec[] = s.dialog
+    ? []
+    : [{ id: 6, name: 'icon', x: 24, y: 96, w: 48, h: 48, key: `icon:${s.icon ?? 'none'}`, z: 6 }]
   if (s.bar) {
     images.push({ id: 7, name: 'bar', x: 92, y: 166, w: 288, h: 24, key: 'bar:wave:0', z: 7 })
   }
 
-  const kind = s.alert ? 'alert' : blank ? 'blank' : 'plain'
+  // Positions differ in the dialog, so it's its own page structure (one rebuild in, one out).
+  const kind = s.dialog ? 'dialog' : s.alert ? 'alert' : blank ? 'blank' : 'plain'
   return { signature: `${kind}${s.bar ? '+bar' : ''}`, texts, images }
 }

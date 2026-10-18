@@ -641,8 +641,8 @@ async def voice_(v: VoiceInput):
     through the same path as a gesture. An approval of a spend is never applied by voice: it returns
     confirm_required and the wearer taps to confirm (the spend still goes through policy.py)."""
     def reply(**kw) -> dict:
-        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "gesture": None,
-                "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
+        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "model": None,
+                "gesture": None, "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
         return {**base, **kw}
 
     if v.screen_id != S.screen["screen_id"]:  # check before paying for speech-to-text
@@ -661,13 +661,16 @@ async def voice_(v: VoiceInput):
     else:
         return reply(reason="no audio")
 
-    intent, confidence, via = await voice.classify(transcript, v.screen_id, S.screen["lines"])
+    intent, confidence, via, model, note = await voice.classify(transcript, v.screen_id, S.screen["lines"])
     gesture = voice.intents_for(v.screen_id).get(intent)
     await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript, "intent": intent,
-                                  "confidence": confidence, "via": via})
-    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture)
+                                  "confidence": confidence, "via": via, "model": model, "note": note})
+    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture,
+                   model=model)
     if not gesture:
-        return {**result, "reason": "didn't match a command on this screen"}
+        # A model failure must read as a failure ("intent model failed: …"), never as "didn't understand".
+        failed = note and (note.startswith("intent model failed") or note.startswith("voice not configured"))
+        return {**result, "reason": note if failed else "didn't match a command on this screen"}
     if voice.needs_tap(v.screen_id, intent):
         return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
     # The screen may have changed while we were transcribing; /input checks screen_id again.

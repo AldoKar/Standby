@@ -2,7 +2,7 @@
 // The engine replays state.snapshot + the current hud.screen on every (re)connect, so a dropped
 // connection redraws by itself. EventSource reconnects automatically.
 import { log } from '../debug/logger'
-import type { EngineEvent, Gesture, InputResult, VoiceResult } from './types'
+import type { EngineEvent, Gesture, InputResult, Ledger, TestsResult, VoiceResult } from './types'
 
 export type EngineStatus = 'connecting' | 'live' | 'offline'
 
@@ -76,9 +76,27 @@ async function post<T>(baseUrl: string, path: string, body: unknown, timeoutMs =
   }
 }
 
+async function get<T>(baseUrl: string, path: string, timeoutMs = POST_TIMEOUT_MS): Promise<T> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${baseUrl}${path}`, { cache: 'no-store', signal: ctrl.signal })
+    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`)
+    return (await res.json()) as T
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function createEngine(baseUrl: string) {
   return {
     baseUrl,
+    /** GET /ledger: mandate, spends, refunds, consents, denied attempts. */
+    ledger: () => get<Ledger>(baseUrl, '/ledger'),
+    /** GET /tests: last engine test run (404 until tests have run). */
+    tests: () => get<TestsResult>(baseUrl, '/tests'),
+    /** Recorded-call fallback the engine serves from dashboard/. */
+    recordedCallUrl: `${baseUrl}/dashboard/recorded-call.mp3`,
     /** POST /input. Always sends the screen_id so the engine can tell a stale gesture apart. */
     input: (gesture: Gesture, screen_id: string) => post<InputResult>(baseUrl, '/input', { gesture, screen_id }),
     /** POST /voice: a WAV utterance (base64) or a typed transcript, for the given screen. */
