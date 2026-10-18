@@ -49,7 +49,11 @@ ENGINE_URL = os.getenv("ENGINE_URL", "http://localhost:8000").rstrip("/")
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")  # claude-haiku-4-5 if latency is bad
 MAX_TOKENS = 300
 MAX_TOOL_HOPS = 6
-RESOLVE_TIMEOUT_S = 40  # the mock call takes ~6s; a real ElevenLabs call is slower
+# A real ElevenLabs call runs a minute or two, and the engine only resolves it when the
+# post-call webhook lands. Wait that long: the result should reach the chat the moment the
+# call hangs up, not after the traveller asks for it.
+RESOLVE_TIMEOUT_S = 240
+OUTCOME_POLL_S = 1.0
 
 # How long a chat's transcript stays valid between turns. ASI:One keys every conversation
 # with the same relay address, so without a cutoff a new chat opens holding the last one's
@@ -959,7 +963,7 @@ async def wait_for_outcome(ctx: Context, state: dict) -> dict | None:
     """Poll the engine until the booking, the call and the fee have all played out."""
     deadline = asyncio.get_event_loop().time() + RESOLVE_TIMEOUT_S
     while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(OUTCOME_POLL_S)
         try:
             snap = await snapshot(state)
         except httpx.HTTPError:
