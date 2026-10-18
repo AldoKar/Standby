@@ -227,6 +227,7 @@ function handle(e) {
       if (['calling', 'fee'].includes(d.stage)) call.started = true;
       call.waiting = d.stage === 'fee';
       if (d.outcome) { call.outcome = d.outcome; call.verified = !!d.outcome.verified; }
+      if (d.outcome && d.outcome.error) nudge("The live call didn't start. Play the recorded call.");
       renderTrace();
       renderCall();
       break;
@@ -441,7 +442,7 @@ async function refreshTests() {
       <ul class="cases">${cases.map((c) => `<li>${c.passed ? chip('good', '✓ Pass') : chip('bad', '✕ Fail')} ${esc(c.name)}${c.detail ? `<div class="quiet small">${esc(c.detail)}</div>` : ''}</li>`).join('')}</ul>
       ${t.ran_at ? `<div class="label">Ran at ${esc(time(t.ran_at))}</div>` : ''}`;
   } catch {
-    box.innerHTML = '<p class="quiet small">Not exposed yet. Results show here once the engine serves <code>GET /tests</code>.</p>';
+    box.innerHTML = '<p class="quiet small">No results yet. Run <code>python test_engine.py</code> in <code>engine/</code>, then Refresh.</p>';
   }
 }
 

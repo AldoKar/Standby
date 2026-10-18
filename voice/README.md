@@ -10,7 +10,7 @@ Step by step in [`setup.md`](setup.md). In short:
 2. Buy or import a Twilio number into ElevenLabs (native Twilio integration). Upgrade the Twilio account ($20) so callees don't hear the trial message.
 3. Add the two server tools from `tools.json`, pointing at the engine's public URL.
 4. Set `CALL_MODE=elevenlabs` plus the ElevenLabs variables in `engine/.env`. The engine places the call itself after booking, using `engine/app/call.py` (checked against the ElevenLabs docs on Oct 17; see [`NEEDS-FROM-P1.md`](NEEDS-FROM-P1.md)).
-5. Post-call: point ElevenLabs' post-call webhook at `https://<engine>/call/webhook` and add the data collection fields `held`, `door_code`, `contact`, `fee_usd`. The engine checks them against the transcript with Gemini and only then shows the door code.
+5. Post-call: point ElevenLabs' post-call webhook at `https://<engine>/call/webhook` and add the data collection fields `held`, `door_code`, `contact`, `fee_usd`. The engine checks them against the transcript with Claude and only then shows the door code.
 
 ## Dynamic variables
 

@@ -1,6 +1,8 @@
 # Needs from P1 (engine)
 
-From P4, Oct 17. P4 doesn't edit `engine/` or `contract/`; these are the engine changes the call and the dashboard need. 1 and 2 matter for the 8:00 PM approval milestone.
+From P4, Oct 17. P4 doesn't edit `engine/` or `contract/`; these are the engine changes the call and the dashboard need.
+
+**Status: all done by P1 on `p1-engine` (commit `0288957`), including the `call_failed` screen.** Kept below for reference.
 
 ## 1. `call.py`: treat `success: false` as a failed call
 
