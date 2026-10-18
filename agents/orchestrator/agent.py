@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -123,8 +124,12 @@ arrive as its own message (the result lists them under traveller_already_saw). N
 repeat or paraphrase those lines; say what was agreed on the call and the one fee \
 sentence. That turn may run to 6 lines.
 - Lead with what happened. Give the number and the reason, not adjectives.
-- When a spend needs the traveller's OK, state the amount, what is left of the budget \
-afterwards and the fee allowance, then ask them to reply "REPLY_WITH".
+- When a spend needs the traveller's OK, state the amount and what is left of the budget \
+afterwards, then ask them to reply "REPLY_WITH". Any fee that comes up later is asked \
+about separately, before it is charged.
+- Call pay with approved true only in reply to a message where the traveller says yes to \
+the spend waiting on them. A question, a comment or "thanks" is not a yes. If pay answers \
+not_done, nothing was charged: ask them.
 - Always include the handle when you ask them to reply. A reply without it never reaches \
 you: the chat sends it to the traveller's own assistant instead.
 - When a tool reports a problem found downstream, lead with it before anything else. The \
@@ -154,7 +159,7 @@ UA183 LAX-SFO is cancelled. Two of the three alternatives are out:
 - American AA2401, $319 — over the $300 budget.
 
 That leaves Delta DL1946, 9:15 PM, $215, lands 10:40 tonight. That's $85 of your $300 \
-left afterwards, and I'd hold a $50 allowance for fees downstream.
+left afterwards. If a fee comes up later, I'll ask you before it's charged.
 
 Reply "REPLY_WITH".
 """
@@ -185,7 +190,7 @@ TOOLS = [
         "name": "request_approval",
         "description": (
             "Return the spend that is waiting on the traveller: amount, merchant, reason, "
-            "what is left of the budget and the fee allowance. Call this before asking "
+            "and what is left of the budget. Call this before asking "
             "them to approve, so the numbers you quote are the engine's."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -209,8 +214,9 @@ TOOLS = [
                 "fee_allowance_usd": {
                     "type": "number",
                     "description": (
-                        "Extra fees the traveller allows later in the task without being "
-                        "asked again, in USD. Use 50 unless they named a different limit."
+                        "Only if the traveller named a fee limit themselves, e.g. 'approve, "
+                        "and up to $50 in fees'. Otherwise leave it out: every later fee over "
+                        "$25 then comes back to them before it is charged."
                     ),
                 },
             },
@@ -538,14 +544,18 @@ def options_carousel(snap: dict) -> MetadataContent | None:
     })
 
 
-def review_card(snap: dict, approval: dict, fee_allowance: float = 50) -> MetadataContent:
+def review_card(snap: dict, approval: dict) -> MetadataContent:
     """The one screen where money is confirmed. Every figure comes from the engine."""
     ledger = snap.get("ledger") or {}
     remaining = ledger.get("remaining_usd")
     amount = approval.get("amount")
     pick = snap.get("pick") or {}
-    rows = [{"label": "Flight", "value": f"{pick.get('airline')} {pick.get('flight')}"}] if pick else []
-    if pick:
+    is_fee = approval.get("kind") == "fee"
+    rows = [{"label": "Flight", "value": f"{pick.get('airline')} {pick.get('flight')}"}] if pick and not is_fee else []
+    if is_fee:
+        rows.append({"label": "Asked by", "value": str(approval.get("merchant") or "")})
+        rows.append({"label": "For", "value": str(approval.get("reason") or "fee")})
+    if pick and not is_fee:
         rows.append({"label": "Departs", "value": f"{hhmm(pick.get('departs'))} tonight"})
         rows.append({"label": "Arrives", "value": hhmm(pick.get("arrives"))})
     rows.append({"label": approval.get("kind", "Spend").title(), "value": money(amount)})
@@ -554,16 +564,17 @@ def review_card(snap: dict, approval: dict, fee_allowance: float = 50) -> Metada
             "label": "Budget after this",
             "value": f"{money(remaining - amount)} of {money(ledger.get('budget_usd') or 300)} left",
         })
-    rows.append({"label": "Fee allowance", "value": f"up to {money(fee_allowance)} without asking again"})
+    if not is_fee:
+        rows.append({"label": "Fees later", "value": "I'll ask you before any is charged"})
     return card("review", {
-        "title": "Approve this booking",
+        "title": "Approve this fee" if is_fee else "Approve this booking",
         "summary_rows": rows,
         "approve_cta": {
             "label": f"Approve {money(amount)}",
-            "selection": {"action": "approve", "fee_allowance_usd": fee_allowance},
+            "selection": {"action": "approve"},
             "primary": True,
         },
-        "reject_cta": {"label": "No, not this one", "selection": {"action": "decline"}},
+        "reject_cta": {"label": "No" if is_fee else "No, not this one", "selection": {"action": "decline"}},
     })
 
 
@@ -696,18 +707,25 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
             "remaining_after_this_usd": (
                 round(remaining - amount, 2) if remaining is not None and amount is not None else None
             ),
-            "suggested_fee_allowance_usd": 50,
         }
 
     if name == "pay":
         body: dict = {"approved": bool(args.get("approved"))}
+        # The traveller approves a spend, never the model. A chat turn records whether the
+        # traveller's own message said yes; without that, nothing is approved — a question
+        # asked mid-call must not be read as consent to a fee.
+        if body["approved"] and state.get("said_yes") is False:
+            return {"not_done": "The traveller has not said yes to this spend in this message. "
+                                "Nothing was approved or charged. Ask them to reply "
+                                f'"{HANDLE} approve" or "{HANDLE} no".'}
         if state.get("approval_id"):
             body["approval_id"] = state["approval_id"]
         elif state.get("task_id"):
             body["task_id"] = state["task_id"]
         if body["approved"]:
-            body["fee_allowance_usd"] = float(args.get("fee_allowance_usd") or 50)
-            state["fee_allowance"] = body["fee_allowance_usd"]
+            # 0 unless the traveller named a limit: every fee over the mandate's ask limit
+            # then comes back to them before it is charged, as it does on the glasses.
+            body["fee_allowance_usd"] = float(args.get("fee_allowance_usd") or 0)
         state.pop("card", None)  # a decision closes the card it came from
         r = await http.post("/approval", json=body)
         if r.status_code == 404:
@@ -716,13 +734,18 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
         a = r.json()
         state["approval_id"] = None
         booked = a.get("status") == "approved" and a.get("kind") == "booking"
-        state["awaiting_outcome"] = booked
+        # Answering a fee mid-call, either way, lets the call finish: wait for it too.
+        state["awaiting_outcome"] = booked or (a.get("kind") == "fee" and a.get("status") in ("approved", "rejected"))
         out = {
             "status": a.get("status"),  # approved, rejected or denied by the mandate
             "kind": a.get("kind"),
             "amount_usd": a.get("amount"),
             "merchant": a.get("merchant"),
         }
+        if a.get("kind") == "fee":
+            out["doing_now"] = ("the call is finishing; its outcome reaches the traveller in "
+                                "a separate message. Say only that the fee is "
+                                f"{a.get('status')} and the call is finishing.")
         if booked:
             # Booking is not the end of it. The engine now looks downstream and finds the
             # problem the traveller doesn't know about yet — a front desk that closes
@@ -826,6 +849,9 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
             # task has actually resolved, so a stale door code never looks current.
             "call_outcome": snap.get("outcome") if stage == "resolved" else None,
             "remaining_budget_usd": (snap.get("ledger") or {}).get("remaining_usd"),
+            **({"call": "on hold: the business wants this fee before it agrees to anything. "
+                        "Nothing is agreed or held yet, and the call is not over."}
+               if stage == "fee" else {}),
         }
 
     if name == "get_ledger":
@@ -947,6 +973,29 @@ async def wait_for_outcome(ctx: Context, state: dict) -> dict | None:
     return None
 
 
+_YES = re.compile(r"\b(approved?|yes|yep|yeah|ok|okay|sure|confirm(ed)?|go ahead|do it|book it)\b", re.I)
+_NO = re.compile(r"\b(no|nope|don'?t|do not|decline|reject|cancel|stop|not|wait)\b", re.I)
+
+
+def explicit_yes(text: str) -> bool:
+    """Whether the traveller's own message says yes. Conservative on purpose: anything
+    mixed or unclear is not consent, and the agent asks again."""
+    return bool(_YES.search(text)) and not _NO.search(text)
+
+
+def fee_ask(snap: dict, a: dict) -> str:
+    """Written from engine figures in code, so the amount on the ask is the amount charged."""
+    remaining = (snap.get("ledger") or {}).get("remaining_usd")
+    budget = (snap.get("ledger") or {}).get("budget_usd") or 300
+    after = f" That would leave {money(remaining - a['amount'])} of your {money(budget)}." if remaining is not None else ""
+    reply = f'Reply "{HANDLE} approve" or "{HANDLE} no".' if HANDLE else 'Reply "approve" or "no".'
+    what = a.get("reason") or "fee"
+    if "fee" not in what.lower():
+        what += " fee"
+    return (f"On the call, {a.get('merchant') or 'they'} asked for a {money(a['amount'])} "
+            f"{what}. Nothing is charged until you say so.{after}\n\n{reply}")
+
+
 def as_instruction(text: str, state: dict) -> str:
     """A card CTA arrives as a JSON selection string (or, through the planner, as prose).
     Turn JSON into the sentence the traveller would have typed, so one path handles both
@@ -961,11 +1010,10 @@ def as_instruction(text: str, state: dict) -> str:
     if action == "review":
         return "Show me the details for that option before I decide."
     if action == "approve":
-        allowance = sel.get("fee_allowance_usd")
-        state["fee_allowance"] = float(allowance) if allowance is not None else 50.0
-        return f"Approve it, and allow up to ${state['fee_allowance']:g} in fees downstream."
+        allowance = sel.get("fee_allowance_usd")  # older cards carried one
+        return f"Approve it, and allow up to ${float(allowance):g} in fees." if allowance else "Approve it."
     if action == "decline":
-        return "No, don't book that one."
+        return "No, don't approve that."
     return text
 
 
@@ -982,7 +1030,7 @@ async def build_card(ctx: Context, state: dict) -> MetadataContent | None:
         if kind == "review":
             a = pending_approval(snap)
             if a:
-                return review_card(snap, a, state.get("fee_allowance", 50))
+                return review_card(snap, a)
     except Exception:
         ctx.logger.exception("card build failed; sending text only")
     return None
@@ -1110,6 +1158,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     state = await ensure_fresh(ctx, load(ctx, sender))
     state["reply_to"] = sender  # a hire mid-turn narrates its protocol steps here
     text = as_instruction(text, state)  # a card tap arrives as JSON; treat it as if typed
+    state["said_yes"] = explicit_yes(text)
     state["history"].append({"role": "user", "content": text})
     messages = list(state["history"])
 
@@ -1128,9 +1177,20 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     if state.pop("awaiting_outcome", False):
         save(ctx, sender, state)
         await say(ctx, sender, reply)
+        state["said_yes"] = False  # nothing the traveller says from here on is in this turn
         snap = await wait_for_outcome(ctx, state)
         if snap is None:
             await say(ctx, sender, "The call is still running. Say 'status?' in a moment.")
+            return
+        a = pending_approval(snap)
+        if a and snap.get("stage") != "resolved":
+            # The call hit a spend the traveller hasn't agreed to (the late check-in fee).
+            # Ask, exactly as the glasses do, and stop: their answer is the next turn.
+            ask = fee_ask(snap, a)
+            state["history"].append({"role": "assistant", "content": ask})
+            state.pop("said_yes", None)
+            save(ctx, sender, state)
+            await say(ctx, sender, ask, card=review_card(snap, a))
             return
         follow = list(state["history"]) + [
             {
@@ -1151,11 +1211,13 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
             final = "The room is held. Say 'status?' for the details."
         state["history"].append({"role": "assistant", "content": final})
         state.pop("card", None)
+        state.pop("said_yes", None)
         save(ctx, sender, state)
         resolved = snap.get("stage") == "resolved"
         await say(ctx, sender, final, card=result_card(snap) if resolved else None, end=resolved)
         return
 
+    state.pop("said_yes", None)
     save(ctx, sender, state)
     card = await build_card(ctx, state)
     if reply or card is not None:
