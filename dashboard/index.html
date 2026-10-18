@@ -109,8 +109,8 @@
   #vault-list .note { display: block; margin-top: 2px; font-size: 13px; color: var(--quiet); }
   #vault-list .note.spotted { display: inline-block; margin-top: 4px; padding: 2px 6px; border-radius: 4px; background: var(--ask-bg); color: var(--ask); font-weight: 600; }
 
-  /* Money back and expense report */
-  #claim tr.sum td, #expense tr.sum td { font-weight: 600; }
+  /* Money back */
+  #claim tr.sum td { font-weight: 600; }
 </style>
 </head>
 <body>
@@ -190,19 +190,12 @@
   </section>
 
   <section>
-    <h2>Expense report (Workday view)</h2>
-    <div id="expense"></div>
-    <div class="label"><button id="expense-csv">Download CSV</button></div>
-    <div class="label">Simulated: the trip's signed receipts as a business-travel expense report. Not connected to Workday.</div>
-  </section>
-
-  <section>
     <h2>Tests</h2>
     <div id="tests"></div>
     <div class="label"><button id="tests-refresh">Refresh</button></div>
   </section>
 
-  <section class="span2">
+  <section class="span3">
     <h2>Activity (every engine event)</h2>
     <ol id="feed"></ol>
   </section>
@@ -246,7 +239,7 @@ function renderScreen(s) {
 let taskId = null;
 let callMode = '';
 let trace, call, nudgeTimer, agent;
-let claim = null, vaultItems = [], trip = null, spotted = false, cancelledFlight = null, ledgerData = null;
+let claim = null, vaultItems = [], trip = null, spotted = false, cancelledFlight = null;
 
 function resetPanels() {
   trace = { cancelled: null, declined: null, options: [], checks: [] };
@@ -534,7 +527,6 @@ $('recfile').addEventListener('change', (ev) => {
 async function refreshLedger() {
   let l;
   try { l = await (await fetch(API + '/ledger')).json(); } catch { return; }
-  ledgerData = l;
   const row = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${esc(v)}</td></tr>`;
   $('left').innerHTML = `<span class="big">${esc(usd(l.remaining_usd))}</span> <span class="quiet">left of ${esc(usd(l.mandate.budget_usd))}</span>`;
   const claims = l.claims || [];
@@ -547,7 +539,6 @@ async function refreshLedger() {
     claims.map((c) => row(`Card benefits claim <span class="quiet">${esc(c.status)}</span>`, `−${usd(c.total_usd)}`)).join('') +
     (claims.length ? row('Net cost after the claim', usd(l.net_after_claims_usd), 'sum') : '') +
     l.denied.map((d) => row(`${chip('bad', '✕ Denied')} ${esc(d.merchant)} <span class="quiet">${esc(d.reason)}</span>`, usd(d.amount))).join('');
-  renderExpense(l);
   $('consents').innerHTML = l.consents.map((c) =>
     `<li>${c.approved ? chip('good', '✓ OK') : chip('bad', '✕ No')} ${esc(usd(c.amount))} ${esc(c.merchant)} <span class="quiet">on ${esc(VIA[c.gesture] || c.gesture)} · ${esc(time(c.ts))}</span></li>`
   ).join('') || '<li class="quiet">None yet.</li>';
@@ -694,55 +685,6 @@ function renderClaim() {
     ${c.label ? `<div class="label">${esc(c.label)}</div>` : ''}`;
 }
 
-// ---------- expense report (Workday view) ----------
-
-function category(mcc) {
-  const n = Number(mcc);
-  if (n === 4511 || (n >= 3000 && n <= 3299)) return 'Airfare';
-  if (n === 7011) return 'Lodging';
-  return `Category ${mcc}`;
-}
-
-function approvalOf(l, s) {
-  const c = l.consents.find((x) => x.approved && x.amount === s.amount && x.merchant === s.merchant);
-  if (c) return `approved by the traveler on ${VIA[c.gesture] || c.gesture}`;
-  if (s.amount <= l.mandate.ask_over_usd) return `under the ${usd(l.mandate.ask_over_usd)} ask limit`;
-  return 'within the allowance set at booking';
-}
-
-function renderExpense(l) {
-  if (!l.spends.length && !l.denied.length) {
-    $('expense').innerHTML = '<p class="quiet">No expenses yet.</p>';
-    return;
-  }
-  const spends = l.spends.map((s) => `<tr><td>${esc(category(s.mcc))}<div class="quiet small">${esc(s.merchant)} · ${esc(time(s.ts))}</div></td>
-    <td>${chip('good', '✓ Within policy')}<div class="quiet small">${esc(approvalOf(l, s))}${s.signature && s.signature.verified ? ' · signed receipt' : ''}</div></td>
-    <td class="num">${esc(usd(s.amount))}</td></tr>`).join('');
-  const blocked = l.denied.map((d) => `<tr><td>${esc(d.merchant)}</td><td>${chip('bad', '✕ Blocked by policy')}<div class="quiet small">${esc(d.reason)}</div></td>
-    <td class="num quiet">${esc(usd(d.amount))}</td></tr>`).join('');
-  const credits = l.refunds.map((r) => `<tr><td>Refund<div class="quiet small">${esc(r.airline)} · ${esc(r.status)}</div></td><td></td><td class="num">−${esc(usd(r.amount))}</td></tr>`).join('') +
-    (l.claims || []).map((c) => `<tr><td>Card benefits claim<div class="quiet small">${esc(c.status)}</div></td><td></td><td class="num">−${esc(usd(c.total_usd))}</td></tr>`).join('');
-  $('expense').innerHTML = `<table>${spends}${blocked}${credits}
-    <tr class="sum"><td colspan="2">Net cost of the disruption</td><td class="num">${esc(usd(l.net_after_claims_usd))}</td></tr></table>
-    <div class="label">Policy: "${esc(l.mandate.instruction)}" In a company, this limit comes from the travel policy.</div>`;
-}
-
-function downloadExpenseCsv() {
-  const l = ledgerData;
-  if (!l) return;
-  const rows = [['date', 'category', 'merchant', 'amount_usd', 'policy', 'approval', 'reference', 'signature_verified']];
-  l.spends.forEach((s) => rows.push([s.ts, category(s.mcc), s.merchant, s.amount, 'within policy', approvalOf(l, s), s.reference, !!(s.signature && s.signature.verified)]));
-  l.denied.forEach((d) => rows.push([d.ts, 'Blocked', d.merchant, 0, `blocked: ${d.reason}`, '', '', '']));
-  l.refunds.forEach((r) => rows.push([r.ts, 'Refund', r.airline, -r.amount, r.rule || '', r.status, '', '']));
-  (l.claims || []).forEach((c) => rows.push([c.ts, 'Card benefits claim', c.program, -c.total_usd, '', c.status, c.claim_id, '']));
-  const csv = rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = 'standby-expense-report.csv';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
 // ---------- tests ----------
 
 async function refreshTests() {
@@ -801,7 +743,6 @@ document.querySelectorAll('.gestures button').forEach((b) => b.addEventListener(
 $('simulate').addEventListener('click', () => post('/simulate/cancel'));
 $('reset').addEventListener('click', () => post('/demo/reset'));
 $('tests-refresh').addEventListener('click', refreshTests);
-$('expense-csv').addEventListener('click', downloadExpenseCsv);
 resetPanels();
 connect();
 refreshTests();
