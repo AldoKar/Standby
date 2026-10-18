@@ -230,8 +230,13 @@ async def after_answer(a: dict) -> None:
         else:
             S.stage = "cancelled"
             await show("cancelled", ["Not booked", "Tap = see it again"], {"press": "fix"})
-    elif a["kind"] == "fee" and CALL_MODE == "mock":
-        run_later(mock_call_finish(a["status"] == "approved"))
+    elif a["kind"] == "fee":
+        if S.stage == "fee":  # the wearer answered on the glasses: leave the fee screen, the call goes on
+            S.stage = "calling"
+            first = f"+${a['amount']:g} OK" if a["status"] == "approved" else "Fee declined"
+            await show("call_resumed", [first, "Finishing the call"])
+        if CALL_MODE == "mock":
+            run_later(mock_call_finish(a["status"] == "approved"))
 
 
 async def after_booking() -> None:

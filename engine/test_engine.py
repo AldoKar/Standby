@@ -307,6 +307,36 @@ def test_vault(c):
     assert len(c.get("/vault").json()["items"]) == 2
 
 
+def test_real_call_fee_screen(c):
+    """CALL_MODE=elevenlabs: after the wearer OKs the fee, the glasses leave the fee screen
+    while the call goes on (no real call is placed: start_call is stubbed)."""
+    from app import main as engine
+
+    async def no_call(variables):
+        return {"success": True}
+    real = (engine.CALL_MODE, engine.start_call)
+    engine.CALL_MODE, engine.start_call = "elevenlabs", no_call
+    try:
+        c.post("/demo/reset")
+        for g in ("press", "press", "hold"):
+            c.post("/input", json={"gesture": g})
+        wait_for(c, "calling")
+        # the voice agent asks for the fee mid-call, the wearer holds to OK it
+        a = c.post("/call/approval", json={"amount": 40, "reason": "late check-in"}).json()
+        assert c.get("/state").json()["screen"]["screen_id"] == "fee_request"
+        c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"})
+        s = c.get("/state").json()
+        assert s["stage"] == "calling" and s["screen"]["screen_id"] == "call_resumed"
+        assert s["screen"]["lines"] == ["+$40 OK", "Finishing the call"]
+        assert c.get(f"/call/approval/{a['approval_id']}").json()["status"] == "approved"
+        # the call ends: the outcome screen replaces it
+        c.post("/call/completed", json={"held": True, "door_code": "4417", "verified": True})
+        assert c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code 4417"]
+    finally:
+        engine.CALL_MODE, engine.start_call = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -320,6 +350,7 @@ CASES = [
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
     ("Vault: pre-seeded, new pass and call saved, reset restores", test_vault),
+    ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 
