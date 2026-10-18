@@ -80,8 +80,11 @@ async def test_tools() -> dict:
 
     snap = await orch.wait_for_outcome(Ctx(), s)
     assert snap and snap["stage"] == "resolved", snap and snap.get("stage")
-    assert snap["outcome"] == {"held": True, "fee_usd": 40, "door_code": "4417",
-                               "contact": "Maria", "verified": True}, snap["outcome"]
+    # a subset, not equality: the engine may add fields (it added `summary`), and the
+    # contract allows that. Assert only what the agent actually reads.
+    expected = {"held": True, "fee_usd": 40, "door_code": "4417",
+                "contact": "Maria", "verified": True}
+    assert expected.items() <= snap["outcome"].items(), snap["outcome"]
     ok("the call runs and the task resolves: room held, door code verified")
 
     st = await orch.run_tool(Ctx(), s, "get_status", {})
