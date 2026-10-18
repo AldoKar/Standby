@@ -264,13 +264,14 @@ async def finish_call(outcome: dict, transcript_url: str | None) -> None:
                                     "lodging": {"held": held, "door_code": code}})
     await publish("vault.updated", {"type": "call_transcript"})
     S.stage = "resolved"
+    screen_id = "resolved"
     if held and code and outcome.get("verified"):
         lines = ["Room held", f"Door code {code}"]
     elif held:
         lines = ["Room held", "Door code on phone"]  # never show an unverified code
     else:
-        lines = ["Room not held", "Details on your phone"]
-    await show("resolved", lines, {"press": "dismiss"}, 10)
+        screen_id, lines = "not_held", ["Room not held", "Details on your phone"]
+    await show(screen_id, lines, {"press": "dismiss"}, 10)
 
 
 # ---------- SSE ----------
@@ -322,6 +323,11 @@ def pending(kind: str | None = None) -> dict | None:
 @app.post("/input")
 async def input_(g: Gesture):
     stage, gesture = S.stage, g.gesture
+    # A gesture made on a screen that's no longer shown (e.g. a slow "hold" meant for the booking
+    # that lands on the fee screen) must not approve anything. Callers without screen_id
+    # (dashboard buttons) keep working as before.
+    if g.screen_id and g.screen_id != S.screen["screen_id"]:
+        return {"handled": False, "stage": stage, "reason": f"stale screen: {g.screen_id}, now {S.screen['screen_id']}"}
     if gesture == "press" and stage in ("ready", "resolved") and S.screen["screen_id"] == "ready":
         await start_flow("glasses")
     elif gesture == "press" and stage == "resolved":

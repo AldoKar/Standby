@@ -38,8 +38,8 @@ On connect, the engine first sends `state.snapshot`, then the current `hud.scree
 ```
 
 - The engine writes all screen copy. The glasses only render `lines` and send gestures.
-- `gestures` lists the gestures that do something on this screen. Send them to `POST /input`.
+- `gestures` lists the gestures that do something on this screen. Send them to `POST /input` together with this `screen_id`; a gesture for a screen that has since changed is ignored.
 - `clear_after_s`: blank the screen after this many seconds; `null` keeps it.
 - An empty `lines` array means a blank screen.
 
-The demo flow's screen ids, in order: `ready`, `cancelled`, `booking_offer`, `booked`, `calling`, `fee_request`, `resolved`. Other screens that can appear: `only_option` (swipe down on the booking offer), `denied` (a spend broke the mandate) and `call_failed` (the call never connected: "Call didn't connect / Details on your phone").
+The demo flow's screen ids, in order: `ready`, `cancelled`, `booking_offer`, `booked`, `calling`, `fee_request`, `resolved`. Other screens that can appear: `only_option` (swipe down on the booking offer), `denied` (a spend broke the mandate) `call_failed` (the call never connected: "Call didn't connect / Details on your phone") and `not_held` (the call ended without holding the room: "Room not held / Details on your phone"; the stage is still `resolved`).
