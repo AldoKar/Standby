@@ -1,0 +1,16 @@
+[Unit]
+Description=Handle It engine (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=handleit
+WorkingDirectory=/opt/handle-it/engine
+EnvironmentFile=-/opt/handle-it/engine/.env
+# One worker only: state and SSE subscribers live in memory.
+ExecStart=/opt/handle-it/engine/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

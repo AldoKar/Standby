@@ -30,6 +30,8 @@ class Mandate:
         )
 
     def allows_mcc(self, mcc: str) -> bool:
+        if not str(mcc).isdigit():
+            return False
         code = int(mcc)
         for rule in self.allowed_mcc:
             if "-" in rule:
@@ -80,20 +82,23 @@ class Ledger:
         }
 
 
-def check_spend(m: Mandate, ledger: Ledger, amount: float, mcc: str, fee_allowance: float = 0) -> tuple[str, str]:
-    """Return (decision, reason). decision is allow, ask or deny."""
+def check_spend(m: Mandate, ledger: Ledger, amount: float, mcc: str, fee_allowance: float = 0) -> tuple[str, str, str]:
+    """Return (decision, reason, glasses_line). decision is allow, ask or deny.
+    glasses_line is the short (<= 24 chars) cause shown on the denied screen; empty unless denied."""
+    if not amount > 0:  # a negative "spend" would grow the budget; also catches NaN
+        return "deny", f"${amount:g} is not a valid amount; deny", "Invalid amount"
     if datetime.now(timezone.utc) > m.expires_at:
-        return "deny", "mandate expired; confirm on phone"
+        return "deny", "mandate expired; confirm on phone", "Spending limit expired"
     if not m.allows_mcc(mcc):
-        return "deny", f"merchant category {mcc} is not in the mandate; confirm on phone"
+        return "deny", f"merchant category {mcc} is not in the mandate; confirm on phone", "Merchant not allowed"
     left = ledger.remaining(m)
     if amount > left:
-        return "deny", f"${amount:g} > ${left:g} left; deny, confirm on phone"
+        return "deny", f"${amount:g} > ${left:g} left; deny, confirm on phone", "Over your budget"
     if amount <= m.ask_over_usd:
-        return "allow", f"${amount:g} is within the ${m.ask_over_usd:g} ask limit; allowed silently"
+        return "allow", f"${amount:g} is within the ${m.ask_over_usd:g} ask limit; allowed silently", ""
     if fee_allowance and amount <= fee_allowance:
-        return "allow", f"${amount:g} is within the ${fee_allowance:g} fee allowance set at booking"
-    return "ask", f"${amount:g} > ${m.ask_over_usd:g} ask limit; ask the wearer"
+        return "allow", f"${amount:g} is within the ${fee_allowance:g} fee allowance set at booking", ""
+    return "ask", f"${amount:g} > ${m.ask_over_usd:g} ask limit; ask the wearer", ""
 
 
 def rank_options(options: list[dict], m: Mandate, ledger: Ledger, deadline: dict) -> list[dict]:
