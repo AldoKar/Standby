@@ -50,6 +50,12 @@ MAX_TOKENS = 300
 MAX_TOOL_HOPS = 6
 RESOLVE_TIMEOUT_S = 40  # the mock call takes ~6s; a real ElevenLabs call is slower
 
+# How long a chat's transcript stays valid between turns. ASI:One keys every conversation
+# with the same relay address, so without a cutoff a new chat opens holding the last one's
+# history and the agent answers a fresh cancellation with "already handled". A demo run is
+# turns seconds apart; anything older is a different conversation.
+CHAT_TTL_S = 15 * 60
+
 # In ASI:One, a message without an @mention goes to the user's own assistant instead of
 # here, which silently strands the conversation. Every prompt for a reply names the handle
 # so the traveller (and a judge) knows to keep mentioning it. Blank it out for clients
@@ -78,7 +84,9 @@ never from memory. If you have not called a tool this turn, you do not know the 
 
 When to call each tool:
 - get_booking: the traveller reports a cancellation or asks you to fix their trip. Call it \
-first, before anything else. It starts the task and returns the ranked options.
+first, before anything else. It starts the task and returns the ranked options. A \
+cancellation reported after you have already handled one is a new trip, not a repeat: call \
+get_booking again and work from what it returns. Never answer "already handled".
 - search_flights: the traveller asks about options, alternatives, or why something was \
 ruled out.
 - request_approval: you are about to ask the traveller to approve a spend and need the \
@@ -395,8 +403,24 @@ pay_proto = Protocol(spec=payment_protocol_spec, role="buyer")
 
 # ---------- per-sender state ----------
 
+def blank() -> dict:
+    return {"task_id": None, "approval_id": None, "history": []}
+
+
 def load(ctx: Context, sender: str) -> dict:
-    return ctx.storage.get(f"chat:{sender}") or {"task_id": None, "approval_id": None, "history": []}
+    state = ctx.storage.get(f"chat:{sender}")
+    if not state:
+        return blank()
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(state["last_turn"])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        age = CHAT_TTL_S + 1  # written before this field existed, or unreadable: treat as stale
+    if age > CHAT_TTL_S:
+        # Too long since the last turn to be the same conversation. Drop the transcript;
+        # ensure_fresh still adopts the engine's task if one is somehow still in flight.
+        ctx.logger.info("chat has gone stale — starting clean")
+        return blank()
+    return state
 
 
 async def ensure_fresh(ctx: Context, state: dict) -> dict:
@@ -424,7 +448,7 @@ async def ensure_fresh(ctx: Context, state: dict) -> dict:
         # Start the chat clean, then fall through and adopt whatever is in flight now, so an
         # "approve" from a relay that remembers an old task still reaches the pending spend.
         ctx.logger.info("engine task is gone — starting the chat clean")
-        state = {"task_id": None, "approval_id": None, "history": []}
+        state = blank()
 
     try:
         snap = (await http.get("/state")).json()
@@ -441,6 +465,7 @@ async def ensure_fresh(ctx: Context, state: dict) -> dict:
 
 def save(ctx: Context, sender: str, state: dict) -> None:
     state["history"] = state["history"][-6:]  # the engine is the source of truth, not the transcript
+    state["last_turn"] = datetime.now(timezone.utc).isoformat()
     ctx.storage.set(f"chat:{sender}", state)
 
 
@@ -1071,6 +1096,11 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     if ending:
         ctx.storage.remove(f"chat:{sender}")
         return
+    if starting:
+        # A new chat. ASI:One reuses the relay address, so the old transcript is still
+        # sitting under this key — drop it, or the first turn is answered out of the last
+        # conversation. Anything genuinely in flight is re-adopted by ensure_fresh.
+        ctx.storage.remove(f"chat:{sender}")
     if not text:
         if starting:
             await say(ctx, sender, "Tell me what went wrong with your trip and I'll handle it.")
