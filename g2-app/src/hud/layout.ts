@@ -1,13 +1,13 @@
 // Screen → page plan (where everything goes on the 576×288 lens).
 // Single source of truth for BOTH the real glasses (bridge.ts) and the browser mirror (HudMirror.tsx).
 //
-// Budget: max 12 containers, 8 text, 4 image. Worst case here is 5 text + 2 image
-// (margin or alert frame, header, main, detail, footer/hint + icon, bar).
+// Budget: max 12 containers, 8 text, 4 image. Worst case here is 6 text + 2 image
+// (margin or alert frame, header, main, detail, footer/hint, voice tag + icon, bar).
 // Choices render as ONE native hint line ("Tap = book  ·  Swipe ↓ = other"), left-aligned like Even's own
 // apps, instead of fake buttons: no centring to fake, one read, and the page structure doesn't change between
 // screens, so most transitions are cheap textContainerUpgrade calls instead of full rebuilds.
-import { destinationArtKey } from './images'
-import type { HudChoice, HudScreen, VoiceState } from './screens'
+import { destinationArtKey, logoKey } from './images'
+import { voiceTag, type HudChoice, type HudScreen } from './screens'
 
 export const LENS_W = 576
 export const LENS_H = 288
@@ -70,20 +70,35 @@ function clamp(line: string, max = MAX_CHARS): string {
 // Gesture words on the lens. `↓` is probed and renders on the G2 font.
 const GESTURE_WORD: Record<HudChoice['gesture'], string> = { tap: 'Tap', hold: 'Hold', swipe: 'Swipe ↓' }
 
-/** "Tap = book  ·  Swipe ↓ = other" (+ "  ·  or say it" while the mic is live) */
-export function hintText(choices: HudChoice[], voice?: VoiceState): string {
-  const base = choices.map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`).join('  ·  ')
-  return voice === 'listening' || voice === 'thinking' ? `${base}  ·  or say it` : base
+/** "Tap = book  ·  Swipe ↓ = other". Whether voice works here is the voice tag's job, not the hint's. */
+export function hintText(choices: HudChoice[]): string {
+  return choices.map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`).join('  ·  ')
 }
 
-// Voice status lives in the app-owned header, so the engine's lines never move.
-const VOICE_HEADER: Partial<Record<VoiceState, string>> = {
-  thinking: 'Heard you…',
-  missed: "Didn't catch that",
-  offline: 'Voice off',
-}
+const headerText = (s: HudScreen) => s.header
 
-const headerText = (s: HudScreen) => (s.voice && VOICE_HEADER[s.voice]) || s.header
+// Voice tag: always the same place (top-right), so the wearer learns to glance there before speaking.
+// Its own text container, always present (blank when there's nothing to say), so mic state changes are
+// cheap text upgrades and never rebuild the page. Bright while the wearer is being heard.
+const TAG = { x: 440, w: 124 }
+const TAG_MAX_CHARS = 11
+const HEADER_W = TAG.x - 16 - 8
+
+function tagSpec(s: HudScreen, y: number): TextSpec {
+  const text = voiceTag(s)
+  const active = s.voice === 'hearing' || s.voice === 'thinking' || (s.ask?.phase === 'listening')
+  return {
+    id: 8,
+    name: 'voice',
+    x: TAG.x,
+    y,
+    w: TAG.w,
+    h: 36,
+    color: active ? BRIGHT : HINT,
+    content: clamp(text, TAG_MAX_CHARS) || BLANK,
+    z: 8,
+  }
+}
 
 /** Image key for centred text: "text:<px>:<gray 0-255>:<uri-encoded text>" (drawn in images.ts). */
 export function textImageKey(text: string, px: number, gray: number): string {
@@ -124,9 +139,8 @@ function planList(s: HudScreen): PagePlan {
   if (title) {
     images.unshift({ id: 6, name: 'title', x: (LENS_W - 288) / 2, y: 10, w: 288, h: 36, key: textImageKey(title, 22, 210), z: 6 })
   }
-  // One instruction per line in the narrow box; "or say it" joins the first while the mic is live.
+  // One instruction per line in the narrow box.
   const help = (s.choices ?? []).slice(0, 2).map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`)
-  if (help.length && (s.voice === 'listening' || s.voice === 'thinking')) help[0] = `${help[0]} · or say it`
   const box = { border: true, borderLevel: SECTION_BORDER, radius: 8 }
   const items = listItems(s.lines)
   return {
@@ -157,8 +171,127 @@ function planList(s: HudScreen): PagePlan {
         ...box,
         z: 5,
       },
+      tagSpec(s, 10), // inside the title box, right of the centred title
     ],
     images,
+  }
+}
+
+// Call: the flight list's boxed layout (same title box, same section borders).
+//   ┌──────────────── Calling guesthouse ───────── ○ Voice on ┐  title box, the title centred (image)
+//   ├──────────────┬──────────────────────────────────────────┤
+//   │              │ Desk closes 11:00 PM                     │  left: the phone, large
+//   │     [☏]      │ You land 10:40                           │  right: the engine's lines (this box captures
+//   │              │ ▮▯▮▮▯▮▯▮▮▯ (moving)                      │  gestures) and the voice wave under them
+//   ├──────────────┴──────────────────────────────────────────┤
+//   │ Hold = hide                                             │  footer box: the hint
+//   └─────────────────────────────────────────────────────────┘
+// 5 text (title box, phone box, text box, footer, voice tag) + 3 image (title, phone, wave).
+const CALL_ICON_BOX = { x: 4, y: 56, w: 168, h: 172 }
+const CALL_ICON = 96 // the 48×48 phone drawn at 2×
+const CALL_TEXT_BOX = { x: 176, y: 56, w: 396, h: 172 }
+const CALL_BAR = { w: 170, h: 32 } // 12 bars × 14 px
+const CALL_FOOTER = { x: 4, y: 232, w: LENS_W - 8, h: 52 }
+
+function planCall(s: HudScreen): PagePlan {
+  const box = { border: true, borderLevel: SECTION_BORDER, radius: 8 }
+  const images: ImageSpec[] = [
+    {
+      id: 7,
+      name: 'icon',
+      x: CALL_ICON_BOX.x + (CALL_ICON_BOX.w - CALL_ICON) / 2,
+      y: CALL_ICON_BOX.y + (CALL_ICON_BOX.h - CALL_ICON) / 2,
+      w: CALL_ICON,
+      h: CALL_ICON,
+      key: `icon:${s.icon ?? 'phone'}`,
+      z: 7,
+    },
+  ]
+  if (s.header) {
+    images.unshift({ id: 6, name: 'title', x: (LENS_W - 288) / 2, y: 10, w: 288, h: 36, key: textImageKey(s.header, 22, 210), z: 6 })
+  }
+  if (s.bar) {
+    // Under the two text lines (~28 px each, after the box padding), left-aligned with them.
+    images.push({ id: 9, name: 'bar', x: CALL_TEXT_BOX.x + 14, y: CALL_TEXT_BOX.y + 96, ...CALL_BAR, key: 'bar:wave:0', z: 9 })
+  }
+  return {
+    signature: `call${s.bar ? '+bar' : ''}`,
+    texts: [
+      { id: 1, name: 'titlebox', x: 4, y: 4, w: LENS_W - 8, h: 48, color: DIM, content: BLANK, ...box, z: 1 },
+      { id: 2, name: 'iconbox', ...CALL_ICON_BOX, color: DIM, content: BLANK, ...box, z: 2 },
+      {
+        id: 3,
+        name: 'main',
+        ...CALL_TEXT_BOX,
+        color: BRIGHT,
+        content: s.lines.slice(0, 2).map((l) => clamp(l, 30)).join('\n') || BLANK,
+        padding: 12,
+        ...box,
+        capture: true, // exactly one container captures gestures (long press = hide)
+        z: 3,
+      },
+      {
+        id: 5,
+        name: 'footer',
+        ...CALL_FOOTER,
+        color: HINT,
+        content: clamp(hintText(s.choices ?? []), HINT_MAX_CHARS) || BLANK,
+        padding: 10,
+        ...box,
+        z: 5,
+      },
+      tagSpec(s, 10),
+    ],
+    images,
+  }
+}
+
+// Home (`ready`): the logo centred, the line under it (drawn centred as an image: the SDK can't centre
+// text), the gestures in the footer box like the call and the flight list. The footer box captures gestures.
+//   ┌──────────────────────────────────────────────────────┐
+//   │                     [  logo  ]                       │  no voice tag: the footer says it
+//   │                     [        ]                       │  (Connecting… uses the same layout)
+//   │            Ask Standby about your travel             │
+//   ├──────────────────────────────────────────────────────┤
+//   │ Tap = start  ·  Hold = ask                           │
+//   └──────────────────────────────────────────────────────┘
+// 2 text (footer, voice tag) + 2 image (logo, line).
+const HOME_LOGO = { w: 152, h: 140, y: 14 } // public/standby-logo-g2.png is 152×140
+const HOME_LINE_PX = 19 // what "Ask Standby about your travel" fits at in 288 px: "Connecting…" matches it, so nothing resizes
+const HOME_LINE_BOX = { w: 288, h: 36, y: 182 } // 288 = the widest image the glasses take; the text shrinks to fit
+
+function planHome(s: HudScreen): PagePlan {
+  const box = { border: true, borderLevel: SECTION_BORDER, radius: 8 }
+  return {
+    signature: 'home',
+    texts: [
+      {
+        id: 5,
+        name: 'footer',
+        ...CALL_FOOTER,
+        // The gestures; on Connecting… the build stamp, dim.
+        color: s.choices?.length ? HINT : DIM,
+        content: (s.choices?.length ? clamp(hintText(s.choices), HINT_MAX_CHARS) : clamp(s.footer ?? '')) || BLANK,
+        padding: 10,
+        ...box,
+        capture: true, // exactly one container captures gestures
+        z: 5,
+      },
+      tagSpec(s, 10),
+    ],
+    images: [
+      { id: 6, name: 'logo', x: (LENS_W - HOME_LOGO.w) / 2, y: HOME_LOGO.y, w: HOME_LOGO.w, h: HOME_LOGO.h, key: logoKey(), z: 6 },
+      {
+        id: 7,
+        name: 'line',
+        x: (LENS_W - HOME_LINE_BOX.w) / 2,
+        y: HOME_LINE_BOX.y,
+        w: HOME_LINE_BOX.w,
+        h: HOME_LINE_BOX.h,
+        key: textImageKey(s.lines[0] ?? '', HOME_LINE_PX, 230),
+        z: 7,
+      },
+    ],
   }
 }
 
@@ -191,6 +324,8 @@ function planMinimized(): PagePlan {
 export function planScreen(s: HudScreen): PagePlan {
   if (s.mini) return planMinimized()
   if (s.list) return planList(s)
+  if (s.call) return planCall(s)
+  if (s.home) return planHome(s)
   const texts: TextSpec[] = []
   const blank = s.lines.length === 0
   if (s.alert) {
@@ -230,10 +365,10 @@ export function planScreen(s: HudScreen): PagePlan {
       name: 'header',
       x: 16,
       y: 12,
-      w: 544,
+      w: HEADER_W,
       h: 44,
-      color: s.voice && VOICE_HEADER[s.voice] ? HINT : DIM,
-      content: clamp(headerText(s)) || BLANK,
+      color: DIM,
+      content: clamp(headerText(s), 32) || BLANK,
       z: 2,
     },
     {
@@ -269,9 +404,10 @@ export function planScreen(s: HudScreen): PagePlan {
       w: 544,
       h: 44,
       color: hasHint ? HINT : DIM,
-      content: (hasHint ? clamp(hintText(s.choices ?? [], s.voice), HINT_MAX_CHARS) : clamp(s.footer ?? '')) || BLANK,
+      content: (hasHint ? clamp(hintText(s.choices ?? []), HINT_MAX_CHARS) : clamp(s.footer ?? '')) || BLANK,
       z: 5,
     },
+    tagSpec(s, 12),
   )
 
   // No icon container in the dialog: even an empty (black) image sits above the text and hides

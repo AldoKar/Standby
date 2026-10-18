@@ -133,6 +133,27 @@ export function onDestinationArtReady(fn: () => void): void {
 }
 photo.img.src = `${import.meta.env.BASE_URL}golden-gate-g2.png`
 
+// Standby's logo for the home screen (public/standby-logo-g2.png: the mascot converted for the lens, black =
+// unlit, outlines bright, fills dim). Until it loads the slot is blank; the controller re-renders on load.
+const logo = { img: new Image(), ready: false }
+const logoListeners = new Set<() => void>()
+logo.img.onload = () => {
+  logo.ready = true
+  logoListeners.forEach((fn) => fn())
+}
+logo.img.src = `${import.meta.env.BASE_URL}standby-logo-g2.png`
+
+/** Runs once the logo has loaded (the controller re-renders the home screen if it's showing). */
+export function onLogoReady(fn: () => void): void {
+  if (logo.ready) fn()
+  else logoListeners.add(fn)
+}
+
+/** Image key for the logo: a separate key once loaded, so the cache never keeps the blank. */
+export function logoKey(): string {
+  return logo.ready ? 'art:logo' : 'art:logo-loading'
+}
+
 /** Image key for the destination art: the photo once loaded, else the drawn bridge. */
 export function destinationArtKey(): string {
   return photo.ready ? 'art:goldengate-photo' : 'art:goldengate'
@@ -261,6 +282,8 @@ function render(key: string, w: number, h: number): HTMLCanvasElement {
     const sw = Math.min(photo.img.naturalWidth, (w / h) * photo.img.naturalHeight)
     const sx = (photo.img.naturalWidth - sw) / 2
     ctx.drawImage(photo.img, sx, 0, sw, photo.img.naturalHeight, 0, 0, w, h)
+  } else if (type === 'art' && name === 'logo' && logo.ready) {
+    ctx.drawImage(logo.img, 0, 0, w, h)
   } else if (type === 'art' && name.startsWith('goldengate')) {
     drawGoldenGate(ctx, w, h)
   } else if (type === 'dot') {

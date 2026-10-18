@@ -1016,6 +1016,19 @@ async def voice_(v: VoiceInput):
     else:
         return reply(reason="no audio")
 
+    if v.screen_id == "flight_list" and S.choices:
+        # Pick a flight by voice (Ollama): the glasses move the selection to that row and ask for a tap.
+        # Nothing changes here; the booking still needs the tap (`hold` with the row) and policy.py.
+        row, confidence, via, model, note = await voice.choose_flight(transcript, S.choices, S.cursor)
+        await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript,
+                                      "intent": "choose" if row is not None else "unknown", "index": row,
+                                      "confidence": confidence, "via": via, "model": model, "note": note})
+        result = reply(transcript=transcript, confidence=confidence, via=via, model=model)
+        if row is None:
+            failed = note and note.startswith("ollama failed")
+            return {**result, "reason": note if failed else "didn't match a flight on this screen"}
+        return {**result, "intent": "choose", "index": row, "gesture": "hold", "confirm_required": True,
+                "reason": "spend approvals need a tap" + (f" ({note})" if note else "")}
     intent, confidence, via, model, note = await voice.classify(transcript, v.screen_id, S.screen["lines"])
     gesture = voice.intents_for(v.screen_id).get(intent)
     await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript, "intent": intent,
@@ -1028,6 +1041,8 @@ async def voice_(v: VoiceInput):
         return {**result, "reason": note if failed else "didn't match a command on this screen"}
     if voice.needs_tap(v.screen_id, intent):
         return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
+    if voice.is_local(v.screen_id, intent):  # hide / show the call: the glasses do it, nothing changes here
+        return {**result, "gesture": None, "handled": True, "reason": "local"}
     # The screen may have changed while we were transcribing; /input checks screen_id again.
     r = await input_(Gesture(gesture=gesture, screen_id=v.screen_id))
     return {**result, "handled": r["handled"], "stage": r["stage"], "reason": r.get("reason")}

@@ -124,6 +124,7 @@ export interface VoiceResult {
   gesture: Gesture | null
   handled: boolean
   confirm_required: boolean // a spend approval: the glasses must ask for a tap
+  index?: number // flight_list, intent "choose": the row the wearer named ("the Alaska one"), picked by Ollama
   reason: string | null
   stage: string
 }
