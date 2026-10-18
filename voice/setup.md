@@ -137,7 +137,7 @@ ELEVENLABS_PHONE_NUMBER_ID=...
 CALL_TO_NUMBER=+1...
 ```
 
-The engine reads plain environment variables, so load the file before starting it:
+On the Vultr box, systemd loads `/opt/handle-it/engine/.env` (see [`engine/DEPLOY.md`](../engine/DEPLOY.md)); after editing it, run `systemctl restart handle-it`. On a laptop, the engine reads plain environment variables, so load the file before starting it:
 
 ```bash
 cd engine && set -a && source .env && set +a && uvicorn app.main:app --host 0.0.0.0 --port 8000
