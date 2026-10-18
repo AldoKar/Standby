@@ -4,3 +4,4 @@ pydantic>=2
 httpx
 anthropic
 python-dotenv
+cryptography

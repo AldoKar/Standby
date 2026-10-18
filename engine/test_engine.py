@@ -5,6 +5,9 @@ from pathlib import Path
 
 os.environ.setdefault("MOCK_CLERK_DELAY_S", "0.2")
 os.environ.setdefault("MOCK_CALL_END_S", "0.2")
+# Never place real calls from the tests, even if engine/.env says CALL_MODE=elevenlabs
+# (app/__init__ loads .env, but variables already set here win).
+os.environ["CALL_MODE"] = "mock"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -340,6 +343,62 @@ def test_voice_model_fallback(c):
         c.post("/demo/reset")
 
 
+def test_signed_payments(c):
+    """Every spend carries a TAP-style signature the merchant can check; tampering breaks it."""
+    import base64
+    from app import tap
+    c.post("/demo/reset")
+    assert c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()["status"] == "approved"
+    sig = c.get("/ledger").json()["spends"][0]["signature"]
+    assert sig["verified"] and sig["tag"] == "agent-payer-auth" and sig["keyid"] == tap.KEY_ID
+
+    # the key directory publishes the matching public key
+    jwk = c.get(tap.DIRECTORY_PATH).json()["keys"][0]
+    pub = base64.urlsafe_b64decode(jwk["x"] + "==")
+
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    # replaying the same signed request is refused
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, headers, pub) == (False, "replayed nonce")
+    # changing the amount, the merchant or the signature breaks it
+    raw, headers = tap.sign("guesthouse.merchant.example", "/agent/pay", {"amount": 40})
+    assert not tap.verify("guesthouse.merchant.example", "/agent/pay", b'{"amount":400}', headers, pub)[0]
+    assert not tap.verify("evil.merchant.example", "/agent/pay", raw, headers, pub)[0]
+    forged = {**headers, "Signature": "sig1=:" + base64.b64encode(b"x" * 64).decode() + ":"}
+    assert tap.verify("guesthouse.merchant.example", "/agent/pay", raw, forged, pub) == (False, "bad signature")
+    c.post("/demo/reset")
+
+
+def test_real_call_fee_screen(c):
+    """CALL_MODE=elevenlabs: after the wearer OKs the fee, the glasses leave the fee screen
+    while the call goes on (no real call is placed: start_call is stubbed)."""
+    from app import main as engine
+
+    async def no_call(variables):
+        return {"success": True}
+    real = (engine.CALL_MODE, engine.start_call)
+    engine.CALL_MODE, engine.start_call = "elevenlabs", no_call
+    try:
+        c.post("/demo/reset")
+        for g in ("press", "press", "hold"):
+            c.post("/input", json={"gesture": g})
+        wait_for(c, "calling")
+        # the voice agent asks for the fee mid-call, the wearer holds to OK it
+        a = c.post("/call/approval", json={"amount": 40, "reason": "late check-in"}).json()
+        assert c.get("/state").json()["screen"]["screen_id"] == "fee_request"
+        c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"})
+        s = c.get("/state").json()
+        assert s["stage"] == "calling" and s["screen"]["screen_id"] == "call_resumed"
+        assert s["screen"]["lines"] == ["+$40 OK", "Finishing the call"]
+        assert c.get(f"/call/approval/{a['approval_id']}").json()["status"] == "approved"
+        # the call ends: the outcome screen replaces it
+        c.post("/call/completed", json={"held": True, "door_code": "4417", "verified": True})
+        assert c.get("/state").json()["screen"]["lines"] == ["Room held", "Door code 4417"]
+    finally:
+        engine.CALL_MODE, engine.start_call = real
+        c.post("/demo/reset")
+
+
 # Names shown on the dashboard's pass-rate panel (GET /tests). SPEC # refers to docs/SPEC.md test cases.
 CASES = [
     ("Glasses flow end to end", test_glasses_flow),
@@ -353,6 +412,8 @@ CASES = [
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
     ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
     ("Voice: Jev first, Haiku fallback, failures reported", test_voice_model_fallback),
+    ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
+    ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
 ]
 RESULTS = Path(__file__).parent / "test-results.json"
 

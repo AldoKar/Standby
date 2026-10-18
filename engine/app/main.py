@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import call, policy, verify, voice
+from . import call, policy, tap, verify
 from .call import start_call
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -183,10 +185,19 @@ async def answer(approval_id: str, approved: bool, via: str) -> dict:
 
 async def pay(a: dict) -> None:
     ref = f"VIC-{uuid.uuid4().hex[:8].upper()}"
+    # Signed request to the (mock) merchant, which checks it the way a TAP merchant would.
+    authority = re.sub(r"[^a-z0-9]+", "-", a["merchant"].lower()).strip("-") + ".merchant.example"
+    body = {"merchant": a["merchant"], "amount": a["amount"], "mcc": a["mcc"],
+            "token_id": S.mandate.token_id, "reference": ref}
+    raw, headers = tap.sign(authority, "/agent/pay", body)
+    ok, why = tap.verify(authority, "/agent/pay", raw, headers)
+    signature = {"keyid": tap.KEY_ID, "tag": tap.TAG, "alg": "ed25519", "verified": ok, "reason": why,
+                 "signature_input": headers["Signature-Input"], "signature": headers["Signature"]}
     S.ledger.spends.append({"amount": a["amount"], "merchant": a["merchant"], "mcc": a["mcc"],
-                            "kind": a["kind"], "reference": ref, "ts": now()})
+                            "kind": a["kind"], "reference": ref, "ts": now(), "signature": signature})
     await publish("payment.executed", {"amount": a["amount"], "merchant": a["merchant"], "mcc": a["mcc"],
-                                       "token_id": S.mandate.token_id, "reference": ref})
+                                       "token_id": S.mandate.token_id, "reference": ref,
+                                       "signature": {k: signature[k] for k in ("keyid", "tag", "verified")}})
 
 
 async def after_answer(a: dict) -> None:
@@ -196,8 +207,13 @@ async def after_answer(a: dict) -> None:
         else:
             S.stage = "cancelled"
             await show("cancelled", ["Not booked", "Tap = see it again"], {"press": "fix"})
-    elif a["kind"] == "fee" and CALL_MODE == "mock":
-        run_later(mock_call_finish(a["status"] == "approved"))
+    elif a["kind"] == "fee":
+        if S.stage == "fee":  # the wearer answered on the glasses: leave the fee screen, the call goes on
+            S.stage = "calling"
+            first = f"+${a['amount']:g} OK" if a["status"] == "approved" else "Fee declined"
+            await show("call_resumed", [first, "Finishing the call"])
+        if CALL_MODE == "mock":
+            run_later(mock_call_finish(a["status"] == "approved"))
 
 
 async def after_booking() -> None:
@@ -557,6 +573,12 @@ async def merchant_payment(p: PaymentRequest):
         raise HTTPException(403, why)
     await pay({"amount": p.amount, "merchant": p.merchant, "mcc": p.mcc, "kind": "merchant"})
     return {"paid": True, "token_id": S.mandate.token_id, "reason": why}
+
+
+@app.get(tap.DIRECTORY_PATH)
+def tap_key_directory():
+    """Public key merchants use to check the agent's signed payment requests."""
+    return tap.directory()
 
 
 @app.get("/ledger")
