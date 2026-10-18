@@ -1,26 +1,27 @@
 import type { CSSProperties } from 'react'
 import type { BridgeStatus, GlassesInput } from '../glasses/bridge'
 import { imageMirrorUrl } from '../hud/images'
-import { LENS_H, LENS_W, planScreen } from '../hud/layout'
+import { LENS_H, LENS_W, PADDING, type PagePlan } from '../hud/layout'
 import { screenSummary, type HudAction, type HudScreen } from '../hud/screens'
 
 type Props = {
   screen: HudScreen
+  plan: PagePlan // includes the current animation frame
   status: BridgeStatus
   onInput: (input: GlassesInput) => void
 }
 
 const STATUS_LABEL: Record<BridgeStatus, string> = {
   connecting: 'Connecting to glasses…',
-  connected: 'Connected (simulator / G2)',
-  browser: 'Browser mode (mirror only)',
-  error: 'Glasses error, check the log',
+  connected: 'Connected · G2',
+  browser: 'Mirror only · no glasses',
+  error: 'Glasses error · see developer log',
 }
 
 const ACTION_LABEL: Record<HudAction['kind'], string> = {
   approve: 'approve',
   reject: 'reject',
-  accept_alert: 'yes, fix it',
+  accept_alert: 'yes',
   dismiss: 'no',
 }
 
@@ -32,22 +33,34 @@ const box = (x: number, y: number, w: number, h: number): CSSProperties => ({
   height: `${(h / LENS_H) * 100}%`,
 })
 
-/** 576×288 replica of the G2 lens, drawn from the same PagePlan the glasses receive. */
-export function HudMirror({ screen, status, onInput }: Props) {
-  const plan = planScreen(screen)
+/**
+ * Dark dot-grid stage (Even Realities style) holding a 1:1 replica of the 576×288 lens.
+ * Nothing is added *inside* the lens: it shows exactly the PagePlan the glasses receive.
+ */
+export function HudMirror({ screen, plan, status, onInput }: Props) {
   return (
-    <section className="panel hud-panel" aria-labelledby="hud-title">
-      <header className="panel-header">
-        <h2 id="hud-title">Lens view</h2>
-        <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
-      </header>
+    <section className="stage" aria-labelledby="hud-title">
+      <div className="stage-top">
+        <h2 id="hud-title" className="stage-label">
+          Lens view
+        </h2>
+        <span className={`stage-status status-${status}`}>
+          <span className="status-dot" aria-hidden="true" /> {STATUS_LABEL[status]}
+        </span>
+      </div>
 
       <div className="lens" role="img" aria-label={`Glasses display: ${screenSummary(screen)}`}>
         {plan.texts.map((t) => (
           <div
             key={t.id}
             className={`lens-box${t.border ? ' lens-border' : ''}`}
-            style={{ ...box(t.x, t.y, t.w, t.h), zIndex: t.z, opacity: t.color / 4 }}
+            style={{
+              ...box(t.x, t.y, t.w, t.h),
+              zIndex: t.z,
+              opacity: t.color / 4,
+              padding: `calc(100cqw * ${t.padding ?? PADDING} / ${LENS_W})`,
+              borderRadius: t.border ? `calc(100cqw * ${t.radius ?? 10} / ${LENS_W})` : undefined,
+            }}
           >
             {t.content}
           </div>
@@ -63,15 +76,15 @@ export function HudMirror({ screen, status, onInput }: Props) {
         ))}
       </div>
 
-      <div className="hud-controls">
-        <button type="button" onClick={() => onInput('tap')}>
-          Tap{screen.onTap ? ` (${ACTION_LABEL[screen.onTap.kind]})` : ''}
+      <div className="gestures" role="group" aria-label="Glasses gestures">
+        <button type="button" className="gesture" onClick={() => onInput('tap')}>
+          Tap{screen.onTap ? ` · ${ACTION_LABEL[screen.onTap.kind]}` : ''} <kbd>Space</kbd>
         </button>
-        <button type="button" onClick={() => onInput('long_press')}>
-          Hold{screen.onReject ? ` (${ACTION_LABEL[screen.onReject.kind]})` : ''}
+        <button type="button" className="gesture" onClick={() => onInput('long_press')}>
+          Hold{screen.onReject ? ` · ${ACTION_LABEL[screen.onReject.kind]}` : ''} <kbd>H</kbd>
         </button>
-        <button type="button" onClick={() => onInput('double_tap')}>
-          Double tap (exit)
+        <button type="button" className="gesture" onClick={() => onInput('double_tap')}>
+          Double tap · exit <kbd>Esc</kbd>
         </button>
       </div>
     </section>

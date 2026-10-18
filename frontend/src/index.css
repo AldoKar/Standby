@@ -1,8 +1,22 @@
+/* Light, editorial page in the style of evenrealities.com. The lens stage is the only dark element.
+   System fonts only: no external font requests (keeps the Even Hub network whitelist clean). */
 :root {
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  color: #e6e6e6;
-  background: #111316;
-  color-scheme: dark;
+  --bg: #ffffff;
+  --surface: #f6f6f4;
+  --line: #e4e4e0;
+  --ink: #111111;
+  --ink-2: #4d4d4d; /* secondary text, ≥7:1 on white */
+  --ink-3: #6b6b6b; /* tertiary text, ≥5:1 on white */
+  --accent: #fbf38c; /* active step background (text on it stays --ink) */
+  --accent-line: #e9dc4f;
+  --lens-green: #3dff6e;
+  --stage: #070807;
+
+  font-family: Inter, 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -19,6 +33,14 @@ button {
   cursor: pointer;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -26,4 +48,10 @@ button {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
 }

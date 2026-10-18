@@ -1,8 +1,8 @@
-# Handle It
+# Standby
 
-> **Most AI assistants stop when there isn't an API. Handle It picks up the phone.**
+> **Most AI assistants stop when there isn't an API. Standby picks up the phone.**
 
-Handle It is an AI travel agent that lives on your **Even G2** glasses. It books your trip, guides you at the airport and, when something goes wrong, fixes it — searching alternatives, asking for your approval with a single tap, paying securely, and **calling the airline on your behalf** when there's no API.
+Standby is an AI travel agent that lives on your **Even G2** glasses. It books your trip, guides you at the airport and, when something goes wrong, fixes it — searching alternatives, asking for your approval with a single tap, paying securely, and **calling the airline on your behalf** when there's no API.
 
 Built at the **LA Hacks AI Hackathon 2026** (Oct 17–18).
 
@@ -49,7 +49,7 @@ FastAPI backend (Vultr) ──► Web dashboard (activity feed + HUD mirror)
   · Event bus (SSE)
   · Vault (Supabase)
         ⇅  REST
-Handle It Agent (Agentverse + Claude)  ◄── ASI:One (chat)
+Standby Agent (Agentverse + Claude)  ◄── ASI:One (chat)
         ▲  ctx.send
 Monitor Agent (Agentverse, reactive)
         │
@@ -59,7 +59,7 @@ Tools: Vault · Flights · Visa payment · ElevenLabs ──☎──► Airline
 **Principles**
 
 - The glasses are only **display, microphone and tap**. No business logic runs there.
-- The **brain lives on Fetch.ai**: the Handle It Agent plans and acts; the Monitor Agent watches flights.
+- The **brain lives on Fetch.ai**: the Standby Agent plans and acts; the Monitor Agent watches flights.
 - The **backend is the bridge**: every component talks to it, and it broadcasts events to everyone.
 - **Sensitive rules live in code**, never in the LLM.
 
@@ -167,7 +167,7 @@ Tap = approve / yes · Double tap = reject / no.
 | `POST` | `/demo/reset` | `{}` | dashboard |
 | `GET` | `/health` | — | everyone |
 
-### Handle It Agent tools
+### Standby Agent tools
 
 | Tool | Input | Output |
 |---|---|---|
@@ -180,9 +180,9 @@ Tap = approve / yes · Double tap = reject / no.
 
 ### Agent ↔ backend
 
-- **Backend → Handle It Agent:** `POST {AGENT_URL}/task` (uAgents `@agent.on_rest_post`) with `{task_id, kind: "book" | "resolve", user_id, input}`.
+- **Backend → Standby Agent:** `POST {AGENT_URL}/task` (uAgents `@agent.on_rest_post`) with `{task_id, kind: "book" | "resolve", user_id, input}`.
 - **Agent → backend:** `POST {BACKEND_URL}/events` with an envelope, for every step.
-- **Monitor → Handle It Agent:** native Fetch message (`ctx.send`) `FlightAlert{flight, status}`.
+- **Monitor → Standby Agent:** native Fetch message (`ctx.send`) `FlightAlert{flight, status}`.
 
 ---
 
@@ -263,7 +263,7 @@ ELEVENLABS_AGENT_ID=
 ELEVENLABS_PHONE_NUMBER_ID=
 AIRLINE_PHONE_NUMBER=
 VISA_API_KEY=            # if sandbox is available
-AGENT_URL=               # Handle It Agent REST endpoint
+AGENT_URL=               # Standby Agent REST endpoint
 STT_API_KEY=             # speech-to-text provider
 
 # agents/.env
@@ -316,12 +316,12 @@ npm run dev
 
 > Required for the Even Realities track.
 
-**Even Hub app name:** `Handle It`
+**Even Hub app name:** `Standby`
 
 1. Install the **Even Realities** app on your phone and sign in.
 2. Pair your G2 and update its firmware.
-3. In the Even Realities app go to **Me → Beta tester** and install **Handle It**.
-4. Open Handle It on the glasses. It connects to our hosted backend automatically; no API keys are needed to test.
+3. In the Even Realities app go to **Me → Beta tester** and install **Standby**.
+4. Open Standby on the glasses. It connects to our hosted backend automatically; no API keys are needed to test.
 5. From the dashboard (`<DASHBOARD_URL>`), press **Simulate cancellation** and follow the HUD.
 
 **Controls:** tap = approve · double tap = reject / back.
