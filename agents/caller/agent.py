@@ -160,6 +160,10 @@ async def mock_call(ctx: Context, job: dict, attempt: int) -> dict:
 
     script = MOCK["call_script_mock"]
     outcome = {
+        # Echo what was asked, so the caller cannot look like it answered a different
+        # question. The mock clerk agrees to whatever the job was.
+        "asked": job["purpose"],
+        "agreed": True,
         "held": True,
         "fee_usd": script["fee_usd"],
         "door_code": script["door_code"],

@@ -84,6 +84,12 @@ ruled out.
 exact amount, merchant and remaining budget.
 - pay: the traveller has clearly said yes or no to a spend. Pass their answer through; \
 the engine decides whether it goes through.
+- After hire_caller, always name the fee you paid and who paid it: the Caller is a \
+separate agent that charges per call over the Agent Payment Protocol, and Standby covers \
+it, not the traveller. One short sentence, e.g. "I hired my Caller agent for that — $1.99 \
+over the Agent Payment Protocol, my cost, not your budget."
+
+When to call each tool (continued):
 - hire_caller: a business needs phoning — because the engine found a problem downstream \
 and has not already started a call, or because the traveller asked for somewhere specific \
 to be called. It hires the Standby Caller agent, which charges a per-call fee that Standby \
@@ -495,6 +501,12 @@ async def snapshot(state: dict) -> dict:
     if not state.get("task_id"):
         return {}
     r = await http.get(f"/tasks/{state['task_id']}")
+    if r.status_code == 404:
+        # The task was reset away mid-turn. Forget it and answer from live engine state
+        # rather than throwing: a reset between demo runs must not break the turn.
+        state["task_id"] = None
+        state["approval_id"] = None
+        return (await http.get("/state")).json()
     r.raise_for_status()
     return r.json()
 

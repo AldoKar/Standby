@@ -140,6 +140,14 @@ async def test_guardrails() -> None:
         orch.CALLER_ADDRESS = saved_addr
     ok("the Caller is not hired, or paid, while the engine already has a call in flight")
 
+    # a reset while a turn is in flight must not throw
+    s3 = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s3, "get_booking", {})
+    await reset()
+    st = await orch.run_tool(Ctx(), s3, "get_status", {})
+    assert st["stage"] == "ready", st
+    ok("a reset mid-turn degrades to live engine state instead of raising")
+
     # the engine, not the model, is the source of truth after a reset
     await reset()
     fresh = await orch.ensure_fresh(Ctx(), {"task_id": s["task_id"], "approval_id": None,

@@ -82,6 +82,20 @@ before ASI:One can reach it. Run both agents on the Vultr box under systemd for 
 
 Reset between runs with `curl -X POST localhost:8000/demo/reset`.
 
+### Showing the Payment Protocol
+
+It does **not** fire in the main flow. After a booking the *engine* places the call
+itself, and `hire_caller` deliberately refuses to pay for a call already in progress — so
+no agent-to-agent payment happens. To show it, ask for a second call once the task has
+resolved:
+
+> `@standby call the guesthouse again and ask for a late checkout tomorrow`
+
+That hires the Caller, pays $1.99 over the Agent Payment Protocol, places the call and
+reports back — and the reply says so: *"I hired my Caller agent for that — $1.99 over the
+Agent Payment Protocol, my cost, not your budget."* Agent-to-agent payments are protocol
+messages, not chat content, so the narration is the only way a judge sees them.
+
 ## Tests
 
 ```bash
