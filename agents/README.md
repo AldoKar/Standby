@@ -145,6 +145,7 @@ to an endpoint in `contract/api.md`:
 | `save_to_vault` | `POST /events` with `vault.updated` |
 | `get_status` | `GET /tasks/{id}` |
 | `get_ledger` | `GET /ledger` |
+| `ask_live` | `POST /ask` with `show: false`: free questions answered by the engine's Claude with live FlightAware status, the Vault and the ledger. Read-only; needs `ANTHROPIC_API_KEY` (and `AEROAPI_KEY` for live flights) on the engine |
 
 The engine decides money. It runs the mandate check, returns allow / ask / deny and
 executes the charge; the LLM only passes the traveller's answer through and never sees card

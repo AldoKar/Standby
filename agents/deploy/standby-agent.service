@@ -1,0 +1,21 @@
+[Unit]
+Description=Standby orchestrator agent (Fetch.ai uAgent, ASI:One)
+After=network-online.target handle-it.service
+Wants=network-online.target
+
+[Service]
+User=handleit
+WorkingDirectory=/opt/handle-it/agents
+# Keys and seeds: AGENT_SEED, ANTHROPIC_API_KEY. Either file may hold them; later files win.
+EnvironmentFile=-/opt/handle-it/engine/.env
+EnvironmentFile=-/opt/handle-it/.env
+Environment=ENGINE_URL=http://127.0.0.1:8000
+Environment=CALLER_ADDRESS=agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07
+Environment=PYTHONUNBUFFERED=1
+# Exactly one copy of this agent may run: it owns the agent's Agentverse mailbox.
+ExecStart=/opt/handle-it/agents/.venv/bin/python orchestrator/agent.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

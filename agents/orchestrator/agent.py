@@ -98,6 +98,11 @@ call afterwards.
 - save_to_vault: a document or transcript should be kept.
 - get_status: the traveller asks "status?", "where are we", or anything about progress.
 - get_ledger: the traveller asks about money, budget, refunds or what was spent.
+- ask_live: the traveller asks a factual question the other tools don't answer: the live \
+status, gate, delay or arrival of any flight (any flight number, live from FlightAware), \
+what is in their saved documents (boarding pass, guesthouse confirmation), or what a \
+travel benefit covers. Pass their question as they asked it and relay the answer; say \
+it is live when it came from FlightAware. A question never starts or changes a booking.
 
 How to reply:
 - At most 5 short lines. No preamble, no markdown headings, no emoji.
@@ -240,6 +245,19 @@ TOOLS = [
             "traveller asks where things stand."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "ask_live",
+        "description": (
+            "Answer a factual travel question with the engine's live data: any flight's status, "
+            "gate, delay and times (FlightAware), the traveller's saved documents, the ledger and "
+            "the task. Read-only: it never books, approves or calls. Takes 2-5 seconds."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"question": {"type": "string", "description": "The traveller's question, as asked"}},
+            "required": ["question"],
+        },
     },
     {
         "name": "get_ledger",
@@ -682,6 +700,21 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
         r = await http.get("/ledger")
         r.raise_for_status()
         return r.json()
+
+    if name == "ask_live":
+        question = str(args.get("question", "")).strip()[:500]
+        if not question:
+            return {"error": "no question"}
+        # show: False keeps the chat's question off the glasses. The engine needs its own
+        # ANTHROPIC_API_KEY for /ask; without it (503) or if Claude fails (502), say so.
+        r = await http.post("/ask", json={"question": question, "show": False})
+        if r.status_code in (502, 503):
+            return {"error": f"live answers unavailable right now ({r.json().get('detail', r.status_code)})"}
+        r.raise_for_status()
+        d = r.json()
+        looked_up = [x.get("tool") for x in d.get("steps", []) if x.get("kind") == "tool"]
+        return {"answer": d["answer"], "looked_up": looked_up,
+                "live": "check_flight_status" in looked_up}
 
     return {"error": f"unknown tool {name}"}
 

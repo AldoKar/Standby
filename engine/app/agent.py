@@ -42,7 +42,11 @@ PHASES = {
     "plan": {
         "goal": "Find the best way to get the traveler to their destination in time and choose one flight "
                 "with choose_flight. Prefer arriving in time within budget; among those, the earliest arrival, "
-                "then the lower price. If nothing fits, say so and choose nothing.",
+                "then the lower price. If nothing fits, say so and choose nothing. Then propose the spending limit "
+                "the traveler will approve with one tap, with propose_limit, in a multiple of $50: enough for any "
+                "on-time flight they might pick from the list plus fees on the way (the lodging may charge for a "
+                "late arrival), and no more than that needs. The traveler then picks from up to three flights that "
+                "fit the limit, yours first.",
         "tools": [
             {"name": "check_flight_status", "description": "Live status of a flight and the airline's own rebooking offer.",
              "input_schema": {"type": "object", "properties": {"flight": {"type": "string"}},
@@ -63,6 +67,15 @@ PHASES = {
              "input_schema": {"type": "object", "properties": {
                  "option_id": {"type": "string"}, "reason": {"type": "string", "description": "One short sentence"}},
                  "required": ["option_id", "reason"], "additionalProperties": False}},
+            {"name": "propose_limit",
+             "description": "Propose the spending limit for this trip (USD, a multiple of $50). The traveler accepts it "
+                            "with one tap; code rounds it up to $50 and keeps it between the cheapest on-time fare "
+                            "and $1000. Your reason must match the amount you propose.",
+             "input_schema": {"type": "object", "properties": {
+                 "amount_usd": {"type": "number"},
+                 "reason": {"type": "string", "description": "One or two sentences the traveler can read: the fares "
+                                                             "you found and what the limit covers"}},
+                 "required": ["amount_usd", "reason"], "additionalProperties": False}},
         ],
     },
     "arrival": {

@@ -31,6 +31,8 @@ export type HudScreen = {
   // Free mode: text alone in the middle of the lens (up to 3 bright lines, no icon). Used by the `answer`
   // screen and the push-to-talk steps.
   center?: boolean
+  // Flight list (`flight_list`): three rows in the middle, the highlighted one marked with an arrow.
+  list?: boolean
   // Set on the local push-to-talk screens; `of` is the engine screen to go back to.
   ask?: { of: HudScreen; phase: AskPhase }
   // Minimized call (hud/callView.ts): only a small phone icon in the corner; `of` is the call screen.
@@ -48,9 +50,17 @@ export type AskPhase = 'listening' | 'thinking' | 'failed'
 export type VoiceState = 'listening' | 'thinking' | 'missed' | 'offline'
 
 /** Screens the engine accepts voice commands on (contract/api.md "Voice intents per screen"). */
-export const VOICE_SCREENS = new Set(['cancelled', 'booking_offer', 'only_option', 'fee_request'])
+export const VOICE_SCREENS = new Set([
+  'cancelled',
+  'declined',
+  'booking_offer',
+  'only_option',
+  'flight_list',
+  'fee_request',
+  'claim_ready',
+])
 
-type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar' | 'center'>
+type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar' | 'center' | 'list'>
 
 // Status header per screen. Never "pay", "card" or "Visa" on the glasses (SPEC).
 const STYLES: Record<string, Style> = {
@@ -67,7 +77,15 @@ const STYLES: Record<string, Style> = {
   no_option: { header: 'STANDBY', icon: 'alert', alert: true },
   resolved: { header: 'STANDBY · DONE', icon: 'check' },
   answer: { header: 'STANDBY · ANSWER', center: true },
+  declined: { header: 'STANDBY', icon: 'alert' },
+  flight_list: { header: 'STANDBY · PICK A FLIGHT', center: true, list: true },
+  claim_ready: { header: 'STANDBY · MONEY BACK', icon: 'check' },
+  claim_submitted: { header: 'STANDBY · DONE', icon: 'check' },
 }
+
+// The engine marks the highlighted row with "> "; the G2 font renders "→" (probed), which reads better.
+const LIST_MARK = '→ '
+
 const DEFAULT_STYLE: Style = { header: 'STANDBY', icon: 'none' }
 
 const GESTURE_ORDER: Gesture[] = ['press', 'hold', 'swipe_down']
@@ -100,6 +118,16 @@ export function fromEngine(s: EngineScreen): HudScreen {
     style = { header: 'STANDBY', icon: 'alert', alert: true }
   }
   const lines = [...s.lines]
+
+  // Flight list: up to three rows, no gesture line (the rows use all three lines). The hint comes from the
+  // gestures the engine offers: hold books the highlighted flight (tap, then confirm), swipe moves it.
+  if (style.list) {
+    const rows = lines.slice(0, 3).map((l) => (l.startsWith('> ') ? LIST_MARK + l.slice(2) : l))
+    const choices: HudChoice[] = []
+    if (s.gestures.hold) choices.push({ gesture: s.gestures.press ? 'hold' : 'tap', label: s.gestures.hold })
+    if (s.gestures.swipe_down) choices.push({ gesture: 'swipe', label: s.gestures.swipe_down })
+    return { id: s.screen_id, ...style, lines: rows, choices, gestures: s.gestures, tapConfirms: !s.gestures.press }
+  }
 
   // An answer is all facts (no gesture line): every line bright, in the middle. The hint is app-owned and
   // comes from the gestures the engine offers ("dismiss", and "ask" again in free mode).
@@ -155,7 +183,10 @@ export function confirmScreen(of: HudScreen): HudScreen {
     alert: true, // the bright card = the dialog box
     dialog: true,
     lines: ['Are you sure?'],
-    detail: of.lines.join(' · '), // e.g. "Delta tonight 9:15 PM · $215 · lands 10:40"
+    // e.g. "Delta tonight 9:15 PM · $215 · lands 10:40"; on the list, only the highlighted flight
+    detail: of.list
+      ? (of.lines.find((l) => l.startsWith(LIST_MARK)) ?? '').slice(LIST_MARK.length)
+      : of.lines.join(' · '),
     choices: [
       { label, gesture: 'tap' },
       { label: 'back', gesture: 'swipe' },
