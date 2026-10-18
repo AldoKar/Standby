@@ -21,8 +21,11 @@ Behaviour: start the call for that task the same way `after_booking()` does, and
 immediately. Publishes `call.started` as it already does. If the task is not at a stage
 where a call makes sense, 409 rather than starting one.
 
-**Meanwhile:** `call_provider` tries `POST /call/start`, and on any error falls back to
-reporting the call the engine started on its own. The Caller agent mocks it locally.
+**Meanwhile:** the Caller agent tries `POST /call/start` first and falls back to a mock
+clerk built from `contract/mock-data.json`, reporting the outcome to whoever hired it. It
+only posts `/call/completed` when the engine is actually at the `calling` or `fee` stage,
+so a standalone call can never finish somebody else's task. Confirmed today: the endpoint
+returns 404, so every call currently takes the mock path.
 
 ### 2. `GET /tasks/{task_id}` returns the whole snapshot
 

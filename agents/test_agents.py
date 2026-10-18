@@ -28,7 +28,15 @@ checks = 0
 
 
 class Ctx:
+    """Stands in for a uAgents Context. `sent` records outbound messages so tests can
+    assert on them without a running agent."""
     logger = logging.getLogger("test")
+
+    def __init__(self):
+        self.sent: list = []
+
+    async def send(self, to, message):
+        self.sent.append((to, message))
 
 
 def ok(label: str) -> None:
@@ -115,6 +123,22 @@ async def test_guardrails() -> None:
     paid = await orch.run_tool(Ctx(), other_relay, "pay", {"approved": True})
     assert paid["status"] == "approved", paid
     ok("a turn arriving from a different relay address adopts the task and can approve it")
+
+    # paying twice for one call would be a real loss, so it is blocked in code
+    await reset()
+    s2 = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), s2, "get_booking", {})
+    await orch.run_tool(Ctx(), s2, "pay", {"approved": True, "fee_allowance_usd": 50})
+    saved_addr = orch.CALLER_ADDRESS
+    orch.CALLER_ADDRESS = "agent1qtest"
+    try:
+        ctx = Ctx()
+        res = await orch.run_tool(ctx, s2, "hire_caller", {"purpose": "hold the room"})
+        assert "not_hired" in res, res
+        assert not ctx.sent, "nothing should have been sent to the Caller"
+    finally:
+        orch.CALLER_ADDRESS = saved_addr
+    ok("the Caller is not hired, or paid, while the engine already has a call in flight")
 
     # the engine, not the model, is the source of truth after a reset
     await reset()

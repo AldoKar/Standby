@@ -6,7 +6,7 @@
 | Agent | Name | Address | Job |
 |---|---|---|---|
 | Orchestrator | `standby` | `agent1qwyumnrwayag0jyfy28ajzwwdn5rxz4awr4ft5rltr86zs36444z5f6mmzf` | ASI:One front door: plans within the mandate, calls the engine, reports in chat |
-| Caller | `standby-caller` | _not built yet — skeleton only, see "What's left"_ | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
+| Caller | `standby-caller` | `agent1q2480yjzfu7jv4sk7x9v2s0v7zf89mj9czpqs3sqtaypt5kyd4xkg7yge07` | Places disclosed AI calls to business lines; paid $1.99 per call through the Payment Protocol |
 
 Shared asi1.ai chat URL: `https://asi1.ai/chat/6207e90a-0ea7-4d71-bbfd-8415b2171162`
 _(working run, 2026-10-17 21:39 — **share it from the chat menu before submitting**, the
@@ -137,6 +137,39 @@ in flight, and a task the engine has reset away clears the transcript. The engin
 task at a time, which is what makes this safe — and is also why two people chatting to the
 agent at once would share a trip. Fine for the demo, wrong for production.
 
+## The Caller agent
+
+`standby-caller` is a second agent that does one thing: phone a business that has no API
+and report what was agreed. It is discoverable on its own ("call this guesthouse and hold
+my room") and hired by the orchestrator.
+
+```
+orchestrator (buyer)                      caller (seller)
+  --- ChatMessage: the job --------------->
+  <-- RequestPayment $1.99 ----------------
+  --- CommitPayment(transaction_id) ------>
+  <-- CompletePayment --------------------   then places the call
+  <-- ChatMessage: summary + JSON outcome -
+```
+
+Two things worth knowing:
+
+- **The $1.99 is Standby's cost, not the traveller's.** The mandate covers airlines and
+  lodging; a subcontractor is neither. Paying it from the traveller's $300 would be wrong,
+  and the policy engine would deny it anyway. The orchestrator pays from its own budget,
+  capped by `CALLER_MAX_USD`, and logs an `agent.hired` event so it still appears on the
+  dashboard. The reply tells the traveller the fee was not theirs.
+- **It will not pay twice.** If the engine already has a call in flight, `hire_caller`
+  refuses before any payment is sent. That is enforced in code, not asked for in the
+  prompt, because the failure costs money.
+
+Run it alongside the orchestrator:
+
+```bash
+cd agents && python caller/agent.py          # port 8002
+CALL_VOICEMAIL_FIRST=true python caller/agent.py   # force the retry path for a demo
+```
+
 ## Checklist (Fetch requirements)
 
 - [x] Registered on Agentverse, Chat Protocol manifest published (`AgentChatProtocol 0.3.0`)
@@ -158,7 +191,11 @@ agent at once would share a trip. Fine for the demo, wrong for production.
       `@standby` mention). The documented behaviour is a silent fallback to text, which is
       what we see. Cards stay attached — they cost nothing and lose nothing. See
       "Interactive Cards" below for what was tried.
-- [ ] Caller agent paid through the Payment Protocol, with a retry-on-voicemail path
+- [x] Caller agent paid through the Payment Protocol, with a retry-on-voicemail path —
+      `AgentPaymentProtocol 0.1.0`, Caller is the seller, orchestrator the buyer. Verified
+      agent-to-agent: hire → RequestPayment $1.99 → CommitPayment → CompletePayment →
+      call → outcome. Retry verified with `CALL_VOICEMAIL_FIRST=true`.
+- [ ] Connect the Caller's Agentverse mailbox so ASI:One can reach it directly
 - [ ] Share the chat publicly and confirm the URL above opens for someone logged out
 
 ## Interactive Cards
@@ -191,9 +228,14 @@ loads the booking *and* the approval still shows the carousel first.
 
 ## What's left
 
-**Caller agent.** `caller/agent.py` is still the skeleton. Two things to settle first:
-the engine has no agent-facing endpoint to start a call (raised in `NEEDS.md`), and the
-installed `AgentPaymentProtocol 0.1.0` documents `skyfire` and `fet_direct` as payment
-methods, with no Stripe test rail. If Stripe test mode is needed, that likely means a newer
-`uagents-core` or the separate Stripe integration; otherwise the $1.99 per call should go
-over `fet_direct` on testnet. **This needs a decision before building it.**
+**Caller settlement is simulated.** The Payment Protocol handshake is real and runs over
+the wire, but no FET actually moves: `AgentPaymentProtocol 0.1.0` offers `skyfire` and
+`fet_direct` only — **there is no Stripe test rail** — and these agents hold no funds
+(both log "I do not have enough funds to register on Almanac contract"). Making it settle
+for real means funding the wallets and constructing the agents with `network="testnet"`.
+The pricing, the handshake and the refusal path are all genuine; the transfer is a
+reference string.
+
+**The Caller's mailbox is not connected.** It advertises a local endpoint so the
+orchestrator can reach it, which is enough for the demo, but ASI:One cannot talk to it
+directly until the mailbox is created through its inspector link.

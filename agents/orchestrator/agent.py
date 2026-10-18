@@ -23,6 +23,14 @@ import httpx
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from uagents import Agent, Context, Protocol
+from uagents_core.contrib.protocols.payment import (
+    CancelPayment,
+    CommitPayment,
+    CompletePayment,
+    RejectPayment,
+    RequestPayment,
+    payment_protocol_spec,
+)
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
     ChatMessage,
@@ -76,7 +84,11 @@ ruled out.
 exact amount, merchant and remaining budget.
 - pay: the traveller has clearly said yes or no to a spend. Pass their answer through; \
 the engine decides whether it goes through.
-- call_provider: a booking is done and somewhere downstream needs a phone call.
+- hire_caller: a business needs phoning — because the engine found a problem downstream \
+and has not already started a call, or because the traveller asked for somewhere specific \
+to be called. It hires the Standby Caller agent, which charges a per-call fee that Standby \
+pays itself, never from the traveller's budget. Tell the traveller what was agreed on the \
+call afterwards.
 - save_to_vault: a document or transcript should be kept.
 - get_status: the traveller asks "status?", "where are we", or anything about progress.
 - get_ledger: the traveller asks about money, budget, refunds or what was spent.
@@ -178,12 +190,13 @@ TOOLS = [
         },
     },
     {
-        "name": "call_provider",
+        "name": "hire_caller",
         "description": (
-            "Place a disclosed AI phone call to a business line that has no API, to hold "
-            "a room or confirm a booking. The engine starts this call by itself once a "
-            "booking is paid, so do NOT call this tool when pay has already reported a "
-            "call in progress — only when a call is needed and none has started."
+            "Hire the Standby Caller agent to phone a business that has no API, and wait "
+            "for what it agreed. The Caller charges a per-call fee that Standby pays "
+            "itself — it does not come out of the traveller's budget. Use this when a "
+            "call is needed and the engine has not already started one, or when the "
+            "traveller asks for somewhere specific to be phoned."
         ),
         "input_schema": {
             "type": "object",
@@ -191,7 +204,8 @@ TOOLS = [
                 "purpose": {
                     "type": "string",
                     "description": "What the call should achieve, e.g. hold the room for a late arrival.",
-                }
+                },
+                "to": {"type": "string", "description": "The business to call."},
             },
             "required": ["purpose"],
         },
@@ -234,6 +248,17 @@ TOOLS = [
 llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY from the environment
 http = httpx.AsyncClient(base_url=ENGINE_URL, timeout=20.0)
 
+# ---------- hiring the Caller agent ----------
+# The Caller charges per call over the Agent Payment Protocol. That $1.99 is Standby's own
+# operating cost, not the traveller's money: it is not one of the mandate's allowed
+# merchant categories and must never touch their $300. It is capped here in code and
+# logged to the engine so it still shows up on the dashboard.
+CALLER_ADDRESS = os.getenv("CALLER_ADDRESS", "").strip()
+CALLER_MAX_USD = float(os.getenv("CALLER_MAX_USD", "2.00"))
+CALL_RESULT_TIMEOUT_S = 45  # a chat turn cannot hang; fail visibly instead
+
+jobs: dict[str, dict] = {}  # reference -> {"event": asyncio.Event, "outcome": dict | None}
+
 AGENT_SEED = os.getenv("AGENT_SEED")
 if not AGENT_SEED:
     raise SystemExit(
@@ -248,6 +273,10 @@ agent = Agent(
     port=int(os.getenv("ORCHESTRATOR_PORT", "8001")),
     mailbox=True,
     publish_agent_details=True,
+    # hire_caller awaits the Caller's reply from inside a chat turn. With sequential
+    # handling that reply queues behind the very handler waiting for it, and the turn
+    # deadlocks until it times out.
+    handle_messages_concurrently=True,
     description=(
         "Rebooks cancelled flights within a spending mandate, then phones places with no "
         "API. Handles a cancelled flight end to end: ranks alternatives against the "
@@ -258,6 +287,7 @@ agent = Agent(
 )
 
 chat_proto = Protocol(spec=chat_protocol_spec)
+pay_proto = Protocol(spec=payment_protocol_spec, role="buyer")
 
 
 # ---------- per-sender state ----------
@@ -557,24 +587,38 @@ async def run_tool(ctx: Context, state: dict, name: str, args: dict) -> dict:
                 out["doing_now"] = "calling them to hold the room"
         return out
 
-    if name == "call_provider":
-        # The engine starts the call itself once a booking is paid (contract/api.md has no
-        # agent-facing call endpoint yet; see agents/NEEDS.md). Try the endpoint we asked
-        # P1 for, and fall back to reporting the call the engine already started.
+    if name == "hire_caller":
+        if not CALLER_ADDRESS:
+            return {"error": "no Caller agent is configured; set CALLER_ADDRESS"}
+        # Never pay for a call the engine is already making. The prompt says not to, but
+        # a wrong call here costs real money, so it is enforced rather than requested.
         try:
-            r = await http.post(
-                "/call/start",
-                json={"task_id": state.get("task_id"), "purpose": args.get("purpose", "hold the room")},
-            )
-            if r.status_code < 400:
-                return r.json()
+            stage = (await snapshot(state)).get("stage")
         except httpx.HTTPError:
-            pass
-        snap = await snapshot(state)
+            stage = None
+        if stage in ("calling", "fee"):
+            return {"not_hired": "a call is already in progress for this task; nothing to pay for",
+                    "stage": stage}
+        reference = f"call-{uuid4().hex[:8]}"
+        jobs[reference] = {"event": asyncio.Event(), "outcome": None, "fee": None}
+        job = {"task_id": state.get("task_id"), "purpose": args.get("purpose", "hold the room"),
+               "to": args.get("to") or "Hayes St Guesthouse", "reference": reference}
+        state["job_reference"] = reference
+        await ctx.send(CALLER_ADDRESS, ChatMessage(
+            timestamp=datetime.now(timezone.utc), msg_id=uuid4(),
+            content=[TextContent(type="text", text=json.dumps(job))]))
+        try:
+            await asyncio.wait_for(jobs[reference]["event"].wait(), CALL_RESULT_TIMEOUT_S)
+            outcome = jobs[reference]["outcome"]
+        except asyncio.TimeoutError:
+            outcome = {"error": "the Caller did not report back in time"}
+        fee = jobs.get(reference, {}).get("fee")
+        jobs.pop(reference, None)
         return {
-            "started_by_engine": snap.get("stage") in ("calling", "fee", "resolved"),
-            "stage": snap.get("stage"),
-            "outcome": snap.get("outcome"),
+            "hired": "standby-caller",
+            "fee_paid": fee or "nothing — the call was never paid for",
+            "who_paid": "Standby, from its own budget, not the traveller's",
+            "outcome": outcome,
         }
 
     if name == "save_to_vault":
@@ -744,6 +788,58 @@ async def build_card(ctx: Context, state: dict) -> MetadataContent | None:
     return None
 
 
+# ---------- payment protocol: buyer side ----------
+
+@pay_proto.on_message(RequestPayment)
+async def on_payment_request(ctx: Context, sender: str, msg: RequestPayment):
+    """The Caller wants paying before it dials. Standby covers this itself, within a cap
+    set here in code — the traveller's mandate is for airlines and lodging, not for
+    Standby's subcontractors."""
+    if sender != CALLER_ADDRESS:
+        await ctx.send(sender, RejectPayment(reason="Standby only pays its own Caller agent"))
+        return
+    affordable = [f for f in msg.accepted_funds if float(f.amount) <= CALLER_MAX_USD]
+    if not affordable:
+        asked = ", ".join(f"{f.amount} {f.currency}" for f in msg.accepted_funds)
+        ctx.logger.info(f"declining {asked}: over the ${CALLER_MAX_USD:.2f} cap")
+        await ctx.send(sender, RejectPayment(reason=f"over Standby's ${CALLER_MAX_USD:.2f} per-call cap"))
+        return
+
+    funds = affordable[0]
+    transaction_id = f"sbx-{uuid4().hex[:12]}"  # simulated settlement; no FET moves
+    ctx.logger.info(f"paying {funds.amount} {funds.currency} via {funds.payment_method} "
+                    f"for {msg.reference}")
+    for job in jobs.values():
+        if not job["event"].is_set() and job.get("fee") is None:
+            job["fee"] = f"{funds.amount} {funds.currency}"
+            break
+    await ctx.send(sender, CommitPayment(
+        funds=funds, recipient=msg.recipient, transaction_id=transaction_id,
+        reference=msg.reference, description=msg.description,
+    ))
+    try:  # show it on the dashboard without touching the traveller's ledger
+        await http.post("/events", json={"type": "agent.hired", "data": {
+            "agent": "standby-caller", "amount_usd": float(funds.amount),
+            "method": funds.payment_method, "reference": msg.reference,
+            "note": "paid by Standby, outside the traveller's mandate"}})
+    except httpx.HTTPError:
+        pass
+
+
+@pay_proto.on_message(CompletePayment)
+async def on_payment_complete(ctx: Context, sender: str, msg: CompletePayment):
+    ctx.logger.info(f"Caller confirmed payment {msg.transaction_id}; call is on")
+
+
+@pay_proto.on_message(CancelPayment)
+async def on_payment_cancel(ctx: Context, sender: str, msg: CancelPayment):
+    ctx.logger.info(f"Caller cancelled {msg.transaction_id}: {msg.reason}")
+    for job in jobs.values():
+        if not job["event"].is_set():
+            job["outcome"] = {"error": f"the Caller cancelled: {msg.reason}"}
+            job["event"].set()
+
+
 # ---------- chat protocol ----------
 
 @chat_proto.on_message(ChatMessage)
@@ -756,6 +852,25 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     text = "".join(item.text for item in msg.content if isinstance(item, TextContent)).strip()
     starting = any(isinstance(item, StartSessionContent) for item in msg.content)
     ending = any(isinstance(item, EndSessionContent) for item in msg.content)
+
+    if CALLER_ADDRESS and sender == CALLER_ADDRESS:
+        # The Caller reporting back, not a traveller talking. Hand it to whoever is waiting.
+        outcome = None
+        for line in reversed(text.splitlines()):
+            try:
+                outcome = json.loads(line)
+                break
+            except (ValueError, TypeError):
+                continue
+        ctx.logger.info(f"Caller: {text.splitlines()[0][:80] if text else ''}")
+        if outcome is None:
+            return  # an interim update ("I'll call them now"), not the result — keep waiting
+        for job in jobs.values():
+            if not job["event"].is_set():
+                job["outcome"] = outcome
+                job["event"].set()
+                break
+        return
 
     if ending:
         ctx.storage.remove(f"chat:{sender}")
@@ -827,6 +942,7 @@ async def startup(ctx: Context):
 
 
 agent.include(chat_proto, publish_manifest=True)
+agent.include(pay_proto, publish_manifest=True)
 
 if __name__ == "__main__":
     agent.run()
