@@ -72,6 +72,14 @@ export function eventToChat(e: EngineEvent): ChatLine | null {
         role: 'agent',
         text: `All set: ${e.data.flight ?? 'flight'} tonight, room ${e.data.lodging.held ? 'held' : 'not held'}.`,
       }
+    case 'voice.heard':
+      return {
+        role: 'user',
+        text:
+          e.data.intent === 'unknown'
+            ? `🎙 "${e.data.transcript || '…'}" (not a command here)`
+            : `🎙 "${e.data.transcript}"`,
+      }
     case 'demo.reset':
     case 'state.snapshot':
     case 'hud.screen':

@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import call, policy, verify, voice
 from . import call, policy, tap, verify
 from .call import start_call
 
@@ -363,6 +364,53 @@ async def input_(g: Gesture):
     else:
         return {"handled": False, "stage": stage}
     return {"handled": True, "stage": S.stage}
+
+
+class VoiceInput(BaseModel):
+    screen_id: str
+    audio: str | None = None  # base64 WAV, 16 kHz mono (what the G2 mic gives)
+    format: str = "wav"
+    transcript: str | None = None  # skip speech-to-text: typed commands and tests
+
+
+@app.post("/voice")
+async def voice_(v: VoiceInput):
+    """Voice command from the glasses: transcribe, pick an intent the current screen allows, then run it
+    through the same path as a gesture. An approval of a spend is never applied by voice: it returns
+    confirm_required and the wearer taps to confirm (the spend still goes through policy.py)."""
+    def reply(**kw) -> dict:
+        base = {"transcript": "", "intent": "unknown", "confidence": 0.0, "via": "none", "gesture": None,
+                "handled": False, "confirm_required": False, "reason": None, "stage": S.stage}
+        return {**base, **kw}
+
+    if v.screen_id != S.screen["screen_id"]:  # check before paying for speech-to-text
+        return reply(reason=f"stale screen: {v.screen_id}, now {S.screen['screen_id']}")
+    if not voice.intents_for(v.screen_id):
+        return reply(reason=f"no voice commands on {v.screen_id}")
+    if v.transcript is not None:
+        transcript = v.transcript.strip()
+    elif v.audio:
+        if len(v.audio) > voice.MAX_AUDIO_BYTES * 4 // 3:
+            return reply(reason="audio too long")
+        try:
+            transcript = await voice.transcribe(v.audio, v.format)
+        except Exception as e:  # keep the glasses responsive; the wearer can still tap
+            return reply(reason=str(e)[:200])
+    else:
+        return reply(reason="no audio")
+
+    intent, confidence, via = await voice.classify(transcript, v.screen_id, S.screen["lines"])
+    gesture = voice.intents_for(v.screen_id).get(intent)
+    await publish("voice.heard", {"screen_id": v.screen_id, "transcript": transcript, "intent": intent,
+                                  "confidence": confidence, "via": via})
+    result = reply(transcript=transcript, intent=intent, confidence=confidence, via=via, gesture=gesture)
+    if not gesture:
+        return {**result, "reason": "didn't match a command on this screen"}
+    if voice.needs_tap(v.screen_id, intent):
+        return {**result, "confirm_required": True, "reason": "spend approvals need a tap"}
+    # The screen may have changed while we were transcribing; /input checks screen_id again.
+    r = await input_(Gesture(gesture=gesture, screen_id=v.screen_id))
+    return {**result, "handled": r["handled"], "stage": r["stage"], "reason": r.get("reason")}
 
 
 @app.post("/simulate/cancel")

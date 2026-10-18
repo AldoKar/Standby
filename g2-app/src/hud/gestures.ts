@@ -51,15 +51,24 @@ export async function handleGesture(engine: Engine, gesture: Gesture): Promise<v
   // A tap on an approval screen opens the confirm step instead of being dropped.
   if (gesture === 'press' && screen.tapConfirms) {
     if (!settled(screen, gesture, SETTLE_MS.press)) return
-    const gen = showScreen(confirmScreen(screen))
-    setTimeout(() => {
-      if (showScreenIfCurrent(gen, screen)) log('confirm timed out, back to the offer')
-    }, CONFIRM_TIMEOUT_MS)
+    openConfirm(screen)
     return
   }
 
   if (!settled(screen, gesture, SETTLE_MS[gesture])) return
   return send(engine, gesture, screen)
+}
+
+/**
+ * Show the local "Tap again to confirm" step for an approval screen. Used by the first tap and by a
+ * voice "yes" on a spend (spends always need a tap). Times out back to the offer.
+ */
+export function openConfirm(screen: HudScreen): void {
+  const original: HudScreen = { ...screen, voice: undefined }
+  const gen = showScreen(confirmScreen(original))
+  setTimeout(() => {
+    if (showScreenIfCurrent(gen, original)) log('confirm timed out, back to the offer')
+  }, CONFIRM_TIMEOUT_MS)
 }
 
 /** POST /input for `screen` (the engine screen the gesture belongs to). */
@@ -73,7 +82,7 @@ async function send(engine: Engine, gesture: Gesture, screen: HudScreen): Promis
   const gen = currentGeneration()
   try {
     const r = await engine.input(gesture, screen.id)
-    if (!r.handled) log(`engine ignored ${gesture} (stage ${r.stage})`)
+    if (!r.handled) log(`engine ignored ${gesture} (stage ${r.stage}${r.reason ? `: ${r.reason}` : ''})`)
   } catch (err) {
     log(`POST /input ${gesture} failed: ${(err as Error).message}`)
     // Say so on the lens, then put the engine screen back so the wearer can retry.

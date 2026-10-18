@@ -49,6 +49,7 @@ export interface EventData {
     verified: boolean
   }
   'task.resolved': { flight: string | null; lodging: { held: boolean; door_code: string | null } }
+  'voice.heard': { screen_id: string; transcript: string; intent: string; confidence: number; via: string }
   'demo.reset': Record<string, never>
 }
 
@@ -62,5 +63,19 @@ export type EngineEvent = {
 /** POST /input response. */
 export interface InputResult {
   handled: boolean
+  stage: string
+  reason?: string // e.g. "stale screen: booking_offer, now fee_request"
+}
+
+/** POST /voice response. */
+export interface VoiceResult {
+  transcript: string
+  intent: string // one the screen allows, or "unknown"
+  confidence: number
+  via: 'keywords' | 'model' | 'none'
+  gesture: Gesture | null
+  handled: boolean
+  confirm_required: boolean // a spend approval: the glasses must ask for a tap
+  reason: string | null
   stage: string
 }

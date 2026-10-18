@@ -26,7 +26,19 @@ export type HudScreen = {
   // not `press`, a tap opens a local confirm screen; a second tap sends `hold`. Long press still works directly.
   tapConfirms?: boolean
   confirm?: { of: HudScreen } // set on the local confirm screen; `of` is the engine screen being approved
+  voice?: VoiceState // set by the voice layer (src/voice/listener.ts) on screens that take voice commands
 }
+
+/**
+ * listening: mic verified live → the hint adds "· or say it".
+ * thinking: an utterance was sent → header "STANDBY · HEARD YOU…".
+ * missed: didn't match a command → header "STANDBY · DIDN'T CATCH THAT" for a moment.
+ * offline: voice unavailable (no key, network) → header "STANDBY · VOICE OFF" for a moment.
+ */
+export type VoiceState = 'listening' | 'thinking' | 'missed' | 'offline'
+
+/** Screens the engine accepts voice commands on (contract/api.md "Voice intents per screen"). */
+export const VOICE_SCREENS = new Set(['cancelled', 'booking_offer', 'only_option', 'fee_request'])
 
 type Style = Pick<HudScreen, 'header' | 'icon' | 'alert' | 'bar'>
 
@@ -124,6 +136,7 @@ export function confirmScreen(of: HudScreen): HudScreen {
     ],
     gestures: {},
     tapConfirms: false,
+    voice: undefined, // the confirm step is tap-only: spends always need a tap
     confirm: { of },
   }
 }

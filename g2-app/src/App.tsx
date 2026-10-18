@@ -16,6 +16,8 @@ import { currentPagePlan, currentScreen, showScreen, subscribeHud } from './hud/
 import { handleGesture } from './hud/gestures'
 import { planScreen } from './hud/layout'
 import { fromEngine, idleScreen, offlineScreen, type HudScreen } from './hud/screens'
+import { startVoice } from './voice/listener'
+import { VoiceTester } from './voice/VoiceTester'
 
 const BUILD = `build ${__BUILD_ID__}`
 const HELP = 'The trip chat lives in ASI:One. Here you can type "simulate" to start the demo or "reset".'
@@ -90,8 +92,18 @@ function App() {
   // Glasses bridge + lens state.
   useEffect(() => {
     log(`Standby ${BUILD} · engine ${engine.baseUrl}`)
-    initGlasses(planScreen(INITIAL)).then(setStatus)
-    return subscribeHud((screen, plan) => setHud({ screen, plan }))
+    let stopVoice = () => {}
+    let cancelled = false // StrictMode runs this effect twice in dev; only the surviving run starts the mic
+    initGlasses(planScreen(INITIAL)).then((s) => {
+      setStatus(s)
+      if (s === 'connected' && !cancelled && !SHOT) stopVoice = startVoice(engine)
+    })
+    const offHud = subscribeHud((screen, plan) => setHud({ screen, plan }))
+    return () => {
+      cancelled = true
+      stopVoice()
+      offHud()
+    }
   }, [engine])
 
   // Every event feeds the chat, the lens and the highlighted demo step.
@@ -206,6 +218,7 @@ function App() {
         <details className="devtools" open={DEV_OPEN}>
           <summary>Developer tools</summary>
           {import.meta.env.DEV && <DevPanel />}
+          <VoiceTester engine={engine} />
           <DebugLog />
         </details>
         <span className="build">

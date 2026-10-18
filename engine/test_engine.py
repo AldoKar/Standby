@@ -251,6 +251,38 @@ def test_stale_gestures_and_not_held(c):
     c.post("/demo/reset")
 
 
+def test_voice_commands(c):
+    """Typed transcripts exercise the keyword path with no network and no OpenRouter key."""
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})  # cancelled
+    say = lambda text, screen: c.post("/voice", json={"screen_id": screen, "transcript": text}).json()  # noqa: E731
+    # a gesture-less screen and a stale screen do nothing
+    assert say("yes", "booking_offer")["reason"].startswith("stale screen")
+    r = say("Yes, fix it", "cancelled")
+    assert r["intent"] == "fix" and r["via"] == "keywords" and r["handled"] and r["stage"] == "offer"
+    # approving a spend by voice never books: it asks for a tap
+    r = say("okay", "booking_offer")
+    assert r["intent"] == "approve" and r["confirm_required"] and not r["handled"]
+    assert c.get("/state").json()["stage"] == "offer" and c.get("/ledger").json()["spent_usd"] == 0
+    # "another one" swipes to the other option; unrelated talk is unknown and changes nothing
+    assert say("show me another one", "booking_offer")["intent"] == "other_option"
+    assert c.get("/state").json()["screen"]["screen_id"] == "only_option"
+    os.environ.pop("OPENROUTER_API_KEY", None)
+    r = say("what's the weather like in San Francisco tonight", "only_option")
+    assert r["intent"] == "unknown" and not r["handled"]
+    c.post("/input", json={"gesture": "hold", "screen_id": "only_option"})
+    wait_for(c, "fee")
+    # "no" on the fee is applied by voice (declining spends nothing)
+    r = say("no thanks", "fee_request")
+    assert r["intent"] == "reject" and r["handled"]
+    wait_for(c, "resolved")
+    assert c.get("/ledger").json()["spent_usd"] == 215
+    # no audio and no transcript
+    c.post("/demo/reset")
+    assert c.post("/voice", json={"screen_id": "ready"}).json()["reason"] == "no voice commands on ready"
+    c.post("/demo/reset")
+
+
 def test_signed_payments(c):
     """Every spend carries a TAP-style signature the merchant can check; tampering breaks it."""
     import base64
@@ -318,6 +350,7 @@ CASES = [
     ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),
     ("#7 Call doesn't connect; approval long-poll", test_call_failure_and_long_poll),
     ("Late gesture can't approve another screen; room not held", test_stale_gestures_and_not_held),
+    ("Voice: intents per screen, spend approvals need a tap", test_voice_commands),
     ("Payments signed TAP-style; tampering and replays refused", test_signed_payments),
     ("Real call: fee screen clears after the wearer answers", test_real_call_fee_screen),
 ]

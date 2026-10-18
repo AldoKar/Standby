@@ -6,7 +6,7 @@
 // Choices render as ONE native hint line ("Tap = book  ·  Swipe ↓ = other"), left-aligned like Even's own
 // apps, instead of fake buttons: no centring to fake, one read, and the page structure doesn't change between
 // screens, so most transitions are cheap textContainerUpgrade calls instead of full rebuilds.
-import type { HudChoice, HudScreen } from './screens'
+import type { HudChoice, HudScreen, VoiceState } from './screens'
 
 export const LENS_W = 576
 export const LENS_H = 288
@@ -48,9 +48,17 @@ function clamp(line: string, max = MAX_CHARS): string {
 // Gesture words on the lens. `↓` is probed and renders on the G2 font.
 const GESTURE_WORD: Record<HudChoice['gesture'], string> = { tap: 'Tap', hold: 'Hold', swipe: 'Swipe ↓' }
 
-/** "Tap = book  ·  Swipe ↓ = other" */
-export function hintText(choices: HudChoice[]): string {
-  return choices.map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`).join('  ·  ')
+/** "Tap = book  ·  Swipe ↓ = other" (+ "  ·  or say it" while the mic is live) */
+export function hintText(choices: HudChoice[], voice?: VoiceState): string {
+  const base = choices.map((c) => `${GESTURE_WORD[c.gesture]} = ${c.label}`).join('  ·  ')
+  return voice === 'listening' || voice === 'thinking' ? `${base}  ·  or say it` : base
+}
+
+// Voice status lives in the app-owned header, so the engine's lines never move.
+const VOICE_HEADER: Partial<Record<VoiceState, string>> = {
+  thinking: 'STANDBY · HEARD YOU…',
+  missed: "STANDBY · DIDN'T CATCH THAT",
+  offline: 'STANDBY · VOICE OFF',
 }
 
 // App margin: a thin, low-brightness outline around the whole app area, so the wearer always knows where
@@ -81,7 +89,17 @@ export function planScreen(s: HudScreen): PagePlan {
   }
   const hasHint = Boolean(s.choices?.length)
   texts.push(
-    { id: 2, name: 'header', x: 16, y: 12, w: 544, h: 44, color: DIM, content: clamp(s.header) || BLANK, z: 2 },
+    {
+      id: 2,
+      name: 'header',
+      x: 16,
+      y: 12,
+      w: 544,
+      h: 44,
+      color: s.voice && VOICE_HEADER[s.voice] ? HINT : DIM,
+      content: clamp((s.voice && VOICE_HEADER[s.voice]) || s.header) || BLANK,
+      z: 2,
+    },
     {
       id: 3,
       name: 'main',
@@ -115,7 +133,7 @@ export function planScreen(s: HudScreen): PagePlan {
       w: 544,
       h: 44,
       color: hasHint ? HINT : DIM,
-      content: (hasHint ? clamp(hintText(s.choices ?? []), HINT_MAX_CHARS) : clamp(s.footer ?? '')) || BLANK,
+      content: (hasHint ? clamp(hintText(s.choices ?? [], s.voice), HINT_MAX_CHARS) : clamp(s.footer ?? '')) || BLANK,
       z: 5,
     },
   )

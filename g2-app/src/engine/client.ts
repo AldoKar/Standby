@@ -2,11 +2,12 @@
 // The engine replays state.snapshot + the current hud.screen on every (re)connect, so a dropped
 // connection redraws by itself. EventSource reconnects automatically.
 import { log } from '../debug/logger'
-import type { EngineEvent, Gesture, InputResult } from './types'
+import type { EngineEvent, Gesture, InputResult, VoiceResult } from './types'
 
 export type EngineStatus = 'connecting' | 'live' | 'offline'
 
 const POST_TIMEOUT_MS = 5000
+const VOICE_TIMEOUT_MS = 12000 // speech-to-text + intent; the engine itself gives up after ~13 s worst case
 
 /**
  * Engine base URL, in order: `?api=https://host`, VITE_ENGINE_URL, or the same host on :8000
@@ -55,9 +56,9 @@ export function connectEngine(
   return () => es.close()
 }
 
-async function post<T>(baseUrl: string, path: string, body: unknown): Promise<T> {
+async function post<T>(baseUrl: string, path: string, body: unknown, timeoutMs = POST_TIMEOUT_MS): Promise<T> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), POST_TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
@@ -68,7 +69,7 @@ async function post<T>(baseUrl: string, path: string, body: unknown): Promise<T>
     if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`)
     return (await res.json()) as T
   } catch (err) {
-    if ((err as Error).name === 'AbortError') throw new Error(`${path} timed out after ${POST_TIMEOUT_MS}ms`)
+    if ((err as Error).name === 'AbortError') throw new Error(`${path} timed out after ${timeoutMs}ms`)
     throw err
   } finally {
     clearTimeout(timer)
@@ -80,6 +81,9 @@ export function createEngine(baseUrl: string) {
     baseUrl,
     /** POST /input. Always sends the screen_id so the engine can tell a stale gesture apart. */
     input: (gesture: Gesture, screen_id: string) => post<InputResult>(baseUrl, '/input', { gesture, screen_id }),
+    /** POST /voice: a WAV utterance (base64) or a typed transcript, for the given screen. */
+    voice: (body: { screen_id: string; audio?: string; format?: 'wav'; transcript?: string }) =>
+      post<VoiceResult>(baseUrl, '/voice', body, VOICE_TIMEOUT_MS),
     /** POST /simulate/cancel (dashboard backup for "Tap to start"). */
     simulateCancel: () => post<{ handled: boolean }>(baseUrl, '/simulate/cancel', {}),
     /** POST /demo/reset */
