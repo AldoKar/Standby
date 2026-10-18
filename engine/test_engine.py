@@ -84,10 +84,13 @@ def test_policy_hostile_cases(c):
     american = next(o for o in c.get("/flights/search").json()["options"] if o["airline"] == "American")
     assert american["verdict"] == "rejected" and "over" in american["reason"]
 
-    # 9: a small fee goes through silently (no consent asked) and is logged
-    assert fee(amount=20) == "approved"
+    # 9: on the glasses every spend is asked, even a small fee (no silent "under $25"): pending until a gesture
+    assert fee(amount=20) == "pending"
+    s = c.get("/state").json()
+    assert s["screen"]["screen_id"] == "fee_request" and c.get("/ledger").json()["spends"] == []
+    c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"})
     led = c.get("/ledger").json()
-    assert [s["amount"] for s in led["spends"]] == [20] and led["consents"] == []
+    assert [s["amount"] for s in led["spends"]] == [20] and led["consents"][-1]["gesture"] == "glasses"
 
     # merchant outside the mandate (restaurant, MCC 5812) is denied, logged, and the glasses say why
     assert fee(amount=10, merchant="Diner", mcc="5812") == "denied"
@@ -104,6 +107,32 @@ def test_policy_hostile_cases(c):
     c.post("/mandate", json={"expires_hours": -1})
     assert fee(amount=5) == "denied"
     assert c.get("/state").json()["screen"]["lines"][1] == "Spending limit expired"
+    c.post("/demo/reset")
+
+
+def test_glasses_always_ask(c):
+    """On the glasses every fee is asked: a fee allowance (an ASI:One feature) is ignored there, and so is the
+    silent "under $25" pass. ASI:One keeps both. The mandate still denies what it denies."""
+    from app import main as engine
+    fee = lambda amount: c.post("/call/approval", json={"amount": amount, "reason": "late check-in"}).json()  # noqa: E731
+    # glasses flow, $40 fee, an allowance of $50 sent anyway: still asked, nothing paid
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})  # started on the glasses
+    assert engine.S.flow_source == "glasses"
+    engine.S.fee_allowance = 50
+    r = fee(40)
+    assert r["status"] == "pending" and c.get("/state").json()["screen"]["screen_id"] == "fee_request"
+    assert c.get("/ledger").json()["spends"] == []
+    # /approval can't set an allowance on the glasses flow
+    c.post("/demo/reset")
+    c.post("/input", json={"gesture": "press"})
+    c.post("/approval", json={"approved": False, "fee_allowance_usd": 50})
+    assert engine.S.fee_allowance == 0
+    # ASI:One: the allowance set at booking still lets a $40 fee through, and $20 is under the ask limit
+    c.post("/demo/reset")
+    engine.S.flow_source = "asi1"
+    engine.S.fee_allowance = 50
+    assert fee(40)["status"] == "approved" and fee(20)["status"] == "approved"
     c.post("/demo/reset")
 
 
@@ -448,7 +477,8 @@ def test_signed_payments(c):
     import base64
     from app import tap
     c.post("/demo/reset")
-    assert c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()["status"] == "approved"
+    assert c.post("/call/approval", json={"amount": 20, "reason": "towels"}).json()["status"] == "pending"
+    c.post("/input", json={"gesture": "hold", "screen_id": "fee_request"})  # the wearer OKs it
     sig = c.get("/ledger").json()["spends"][0]["signature"]
     assert sig["verified"] and sig["tag"] == "agent-payer-auth" and sig["keyid"] == tap.KEY_ID
 
@@ -919,6 +949,7 @@ CASES = [
     ("ASI:One flow with fee allowance", test_asi1_flow_with_fee_allowance),
     ("#2 Big fee ($90) denied, #9 small fee allowed", test_policy_denies_over_budget),
     ("#8 Over-budget flight, bad amounts, wrong merchant, expired mandate", test_policy_hostile_cases),
+    ("Glasses always ask for fees; ASI:One keeps its allowance", test_glasses_always_ask),
     ("Merchant charges: logged, once per approval", test_merchant_payment_request),
     ("#5/#6 Call outcome checked against transcript", test_call_outcome_verification),
     ("ElevenLabs webhook: signed, current task only", test_elevenlabs_webhook),

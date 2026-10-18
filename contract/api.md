@@ -14,7 +14,7 @@ Base URL: the engine (locally `http://localhost:8000`). All bodies are JSON, and
 | `POST /demo/reset` | Dashboard | Back to the Ready screen |
 | `POST /tasks` | Orchestrator agent (ASI:One) | `{"source": "asi1"}` → `{task_id, stage, options, pick, approval_id}`. Starts the flow and goes straight to the booking approval |
 | `GET /tasks/{task_id}` | Orchestrator agent | → `{task_id, stage, options, pick, approvals, outcome, ledger}` |
-| `POST /approval` | Orchestrator agent, dashboard | `{"approval_id"?, "task_id"?, "approved", "fee_allowance_usd"?}` → the approval. Without an id it answers the latest pending approval |
+| `POST /approval` | Orchestrator agent, dashboard | `{"approval_id"?, "task_id"?, "approved", "fee_allowance_usd"?}` → the approval. Without an id it answers the latest pending approval. `fee_allowance_usd` only counts in an ASI:One task (`POST /tasks`): on the glasses every spend is asked, with no allowance and no silent pass under `ask_over_usd` (the mandate can still deny) |
 | `POST /call/approval` | Voice agent tool `request_approval` | `{"amount", "reason", "kind"?, "merchant"?, "mcc"?}` → `{approval_id, status}`; status is pending, approved or denied |
 | `GET /call/approval/{approval_id}` | Voice agent tool `check_approval` | `?wait_s=8` (optional, capped at 12) holds the request until the wearer answers → `{approval_id, status}`; status is pending, approved, rejected or denied |
 | `POST /call/completed` | Post-call adapter for the voice agent | `{"held", "door_code"?, "contact"?, "fee_usd"?, "transcript_url"?, "verified"?, "transcript"?}`. With `transcript` ("Agent: ...

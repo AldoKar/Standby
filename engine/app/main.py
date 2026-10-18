@@ -536,9 +536,19 @@ async def offer_pick() -> dict | None:
     )
 
 
+def asi1_flow() -> bool:
+    """The task came from ASI:One (POST /tasks): its own rules, incl. the fee allowance set at booking."""
+    return S.flow_source == "asi1"
+
+
 async def request_spend(kind: str, amount: float, merchant: str, mcc: str, reason: str, screen: tuple) -> dict:
-    """One path for every spend: mandate check, then pay silently, deny, or ask the wearer."""
-    decision, why, line = policy.check_spend(S.mandate, S.ledger, amount, mcc, S.fee_allowance if kind == "fee" else 0)
+    """One path for every spend: mandate check, then pay silently, deny, or ask the wearer.
+    On the glasses (any flow but ASI:One) nothing is paid silently: no fee allowance, no "under $25" pass;
+    every spend the mandate allows is asked on the glasses. The mandate can still deny."""
+    allowance = S.fee_allowance if kind == "fee" and asi1_flow() else 0
+    decision, why, line = policy.check_spend(S.mandate, S.ledger, amount, mcc, allowance)
+    if decision == "allow" and not asi1_flow():
+        decision, why = "ask", f"{why.split(';')[0]}; on the glasses every spend is asked"
     await publish("mandate.checked", {"kind": kind, "amount": amount, "remaining": S.ledger.remaining(S.mandate),
                                       "result": decision, "reason": why})
     a = {"approval_id": f"apr-{uuid.uuid4().hex[:8]}", "task_id": S.task_id, "kind": kind, "amount": amount,
@@ -1190,7 +1200,7 @@ class ApprovalBody(BaseModel):
 
 @app.post("/approval")
 async def approval(body: ApprovalBody):
-    if body.fee_allowance_usd is not None:
+    if body.fee_allowance_usd is not None and asi1_flow():  # the glasses always ask: no allowance there
         S.fee_allowance = body.fee_allowance_usd
     a = S.approvals.get(body.approval_id) if body.approval_id else pending()
     if not a:

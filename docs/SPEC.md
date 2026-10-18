@@ -67,7 +67,7 @@ Every spend goes through one mandate, checked in code (`engine/app/policy.py`). 
 |---|---|
 | Instruction | "Get me to SF tonight. Up to $300 total. Ask me before any spend over $25." |
 | Budget | $300 total, counted across every spend |
-| Ask threshold | Over $25 asks on the glasses; $25 or less goes through silently and is logged |
+| Ask threshold | On the glasses every spend is asked, whatever the amount (no silent pass, no fee allowance). ASI:One keeps "over $25 asks; $25 or less goes through silently and is logged" |
 | Allowed merchants | Airlines (MCC 3000–3299, 4511) and lodging (MCC 7011) |
 | Expiry | 48 hours |
 | Credential | An agent-specific token ID bound to this mandate |
@@ -122,7 +122,7 @@ The shared contract is in `contract/`: `events.md` (every event and the `hud.scr
 | 6 | Retracted code | "Door code is... actually, never mind." | No door code shown; outcome unverified |
 | 7 | Voicemail | Nobody answers | Caller retries once or leaves a voicemail, then tells the user |
 | 8 | Over-budget flight | LLM proposes the $319 flight | Policy rejects it, with the reason in the trace |
-| 9 | Small fee | $20 | Goes through silently and is logged |
+| 9 | Small fee | $20 | On the glasses: asked like any fee, paid only after the gesture. ASI:One: goes through silently and is logged |
 
 ## Build plan
 
