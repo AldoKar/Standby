@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 import warnings
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "orchestrator"))
@@ -27,6 +28,22 @@ GREEN, RED, DIM, CYAN, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[36m", "
 checks = 0
 
 
+class Store:
+    """ctx.storage, in memory."""
+
+    def __init__(self):
+        self.d: dict = {}
+
+    def get(self, key):
+        return self.d.get(key)
+
+    def set(self, key, value):
+        self.d[key] = value
+
+    def remove(self, key):
+        self.d.pop(key, None)
+
+
 class Ctx:
     """Stands in for a uAgents Context. `sent` records outbound messages so tests can
     assert on them without a running agent."""
@@ -34,6 +51,7 @@ class Ctx:
 
     def __init__(self):
         self.sent: list = []
+        self.storage = Store()
 
     async def send(self, to, message):
         self.sent.append((to, message))
@@ -219,6 +237,33 @@ async def test_guardrails() -> None:
     assert a["pending"] and a["amount_usd"] == 215, a
     ok("a relay with a stale task adopts the one in flight, so its approve reaches the pending spend")
 
+    # ASI:One keys every chat with the same relay address, so a new chat opened the next
+    # morning used to arrive holding last night's transcript — and the agent answered a
+    # fresh "UA183 is cancelled" with "already handled", never calling get_booking.
+    ctx, who = Ctx(), "agent1relay"
+    orch.save(ctx, who, {"task_id": "task-old", "approval_id": None,
+                         "history": [{"role": "user", "content": "UA183 is cancelled"},
+                                     {"role": "assistant", "content": "Booked DL1402, room held."}]})
+    assert orch.load(ctx, who)["history"], "a turn moments later is still the same chat"
+    stale = ctx.storage.get(f"chat:{who}")
+    stale["last_turn"] = (orch.datetime.now(orch.timezone.utc)
+                          - timedelta(seconds=orch.CHAT_TTL_S + 60)).isoformat()
+    ctx.storage.set(f"chat:{who}", stale)
+    assert orch.load(ctx, who) == {"task_id": None, "approval_id": None, "history": []}
+    ctx.storage.set(f"chat:{who}", {"task_id": "task-old", "approval_id": None, "history": [1]})
+    assert orch.load(ctx, who)["task_id"] is None, "state saved before last_turn existed is stale too"
+    ok("a chat opened long after the last turn starts clean instead of 'already handled'")
+
+    # the explicit signal, when ASI:One sends one: a new session drops the old transcript
+    ctx, who = Ctx(), "agent1relay2"
+    orch.save(ctx, who, {"task_id": "task-old", "approval_id": None,
+                         "history": [{"role": "user", "content": "old"}]})
+    await orch.handle_message(ctx, who, orch.ChatMessage(
+        timestamp=orch.datetime.now(orch.timezone.utc), msg_id=orch.uuid4(),
+        content=[orch.StartSessionContent(type="start-session")]))
+    assert ctx.storage.get(f"chat:{who}") is None, ctx.storage.d
+    ok("a start-session clears the previous conversation held under the same relay address")
+
 
 # ---------- interactive cards ----------
 
@@ -314,6 +359,21 @@ async def test_live() -> None:
     snap = await orch.wait_for_outcome(Ctx(), s)
     assert snap and snap["stage"] == "resolved"
     ok("the call completes and the task resolves")
+
+    # The reported bug, from the model's side: with a finished trip in the transcript, a
+    # fresh cancellation was answered "already handled" out of memory, and get_booking —
+    # the only thing that resets the engine — was never called. load() now drops a stale
+    # transcript, but the prompt has to hold even when the history legitimately survives.
+    done_task = s["task_id"]
+    s["history"] = [{"role": "user", "content": "approve"},
+                    {"role": "assistant", "content": "Booked DL1946. Room held, door code 4417."}]
+    reply3 = await orch.think(Ctx(), s, s["history"]
+                              + [{"role": "user", "content": "My UA183 got cancelled, handle it"}])
+    print(f"{DIM}{reply3}{RESET}")
+    assert s["task_id"] and s["task_id"] != done_task, (
+        f"a fresh cancellation must start a new task, not answer from the last one: {reply3}")
+    assert "215" in reply3, f"the new task's figures must come from the engine: {reply3}"
+    ok("a cancellation after a finished trip starts a new task instead of 'already handled'")
 
 
 async def main() -> None:
