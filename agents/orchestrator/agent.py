@@ -254,18 +254,39 @@ def load(ctx: Context, sender: str) -> dict:
 
 
 async def ensure_fresh(ctx: Context, state: dict) -> dict:
-    """A /demo/reset wipes the engine's task. The chat transcript must not outlive it, or
-    the next turn argues about a trip that no longer exists ("already booked", "again")."""
+    """Reconcile what this chat thinks is happening against what the engine says.
+
+    Two things go wrong otherwise:
+
+    1. A /demo/reset wipes the engine's task. The transcript must not outlive it, or the
+       next turn argues about a trip that no longer exists ("already booked", "again").
+    2. ASI:One relays turns of one conversation from *different* sender addresses — the
+       options come back to one address and "approve" arrives at another. Keyed on sender
+       alone, the approval lands in an empty bucket and the agent answers "no task has
+       started yet". The engine runs one task at a time, so it is the thread of
+       continuity: a chat with no task adopts whatever is in flight.
+    """
     task_id = state.get("task_id")
-    if not task_id:
+    if task_id:
+        try:
+            r = await http.get(f"/tasks/{task_id}")
+        except httpx.HTTPError:
+            return state  # engine unreachable: keep the context rather than destroying it
+        if r.status_code == 404:
+            ctx.logger.info("engine task is gone (demo reset) — starting the chat clean")
+            return {"task_id": None, "approval_id": None, "history": []}
         return state
+
     try:
-        r = await http.get(f"/tasks/{task_id}")
-    except httpx.HTTPError:
-        return state  # engine unreachable: keep the context rather than destroying it
-    if r.status_code == 404:
-        ctx.logger.info("engine task is gone (demo reset) — starting the chat clean")
-        return {"task_id": None, "approval_id": None, "history": []}
+        snap = (await http.get("/state")).json()
+    except (httpx.HTTPError, ValueError):
+        return state
+    if snap.get("task_id") and snap.get("stage") not in ("ready", "resolved"):
+        ctx.logger.info(f"adopting the engine's in-flight task {snap['task_id']}")
+        state["task_id"] = snap["task_id"]
+        a = pending_approval(snap)
+        if a:
+            state["approval_id"] = a["approval_id"]
     return state
 
 
@@ -702,6 +723,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
             await say(ctx, sender, "Tell me what went wrong with your trip and I'll handle it.")
         return
 
+    ctx.logger.info(f"turn from {sender[:20]}…: {text[:60]}")
     state = await ensure_fresh(ctx, load(ctx, sender))
     text = as_instruction(text, state)  # a card tap arrives as JSON; treat it as if typed
     state["history"].append({"role": "user", "content": text})

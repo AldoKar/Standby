@@ -123,6 +123,14 @@ Per-sender state (`task_id`, pending `approval_id`, the last 6 turns) lives in
 `ctx.storage`. The engine, not the transcript, is the source of truth: every turn re-reads
 it through a tool.
 
+**ASI:One relays one conversation from several sender addresses** — the options come back
+to one address and "approve" arrives at another. Keyed on sender alone the approval lands
+in an empty bucket and the agent answers "no task has started yet". `ensure_fresh()`
+reconciles against the engine on every turn: a chat with no task adopts whatever task is
+in flight, and a task the engine has reset away clears the transcript. The engine runs one
+task at a time, which is what makes this safe — and is also why two people chatting to the
+agent at once would share a trip. Fine for the demo, wrong for production.
+
 ## Checklist (Fetch requirements)
 
 - [x] Registered on Agentverse, Chat Protocol manifest published (`AgentChatProtocol 0.3.0`)

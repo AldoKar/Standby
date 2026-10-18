@@ -104,6 +104,18 @@ async def test_guardrails() -> None:
     assert st["booked_flight"] is None and st["call_outcome"] is None, st
     ok("declining books nothing, and no stale outcome leaks from an earlier task")
 
+    # ASI:One relays one conversation from several sender addresses: the options go to
+    # one, "approve" arrives at another. A chat with no task must pick up the live one.
+    await reset()
+    first = {"task_id": None, "approval_id": None, "history": []}
+    await orch.run_tool(Ctx(), first, "get_booking", {})
+    other_relay = await orch.ensure_fresh(Ctx(), {"task_id": None, "approval_id": None, "history": []})
+    assert other_relay["task_id"] == first["task_id"], (other_relay, first["task_id"])
+    assert other_relay["approval_id"], "the pending approval must come across too"
+    paid = await orch.run_tool(Ctx(), other_relay, "pay", {"approved": True})
+    assert paid["status"] == "approved", paid
+    ok("a turn arriving from a different relay address adopts the task and can approve it")
+
     # the engine, not the model, is the source of truth after a reset
     await reset()
     fresh = await orch.ensure_fresh(Ctx(), {"task_id": s["task_id"], "approval_id": None,
