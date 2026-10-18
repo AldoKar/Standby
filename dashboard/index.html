@@ -50,7 +50,7 @@
   #call-status { font-size: 16px; min-height: 24px; }
   .steps { list-style: none; margin: 10px 0 0; padding: 0; }
   .steps li { padding: 5px 0; border-top: 1px solid var(--line); font-size: 14px; }
-  .steps .t, #feed .t { color: var(--quiet); font-variant-numeric: tabular-nums; margin-right: 8px; font-size: 12px; }
+  .steps .t, #feed .t, #agent-steps .t { color: var(--quiet); font-variant-numeric: tabular-nums; margin-right: 8px; font-size: 12px; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0; }
   dt { color: var(--quiet); }
   dd { margin: 0; font-weight: 600; }
@@ -89,6 +89,28 @@
   #feed { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; font-size: 13px; }
   #feed li { padding: 5px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
   #feed .type { font-weight: 600; margin-right: 8px; }
+
+  /* Claude */
+  #agent-status { min-height: 24px; }
+  #agent-steps { list-style: none; margin: 10px 0 0; padding: 0; max-height: 380px; overflow: auto; }
+  #agent-steps li { padding: 6px 0; border-top: 1px solid var(--line); font-size: 14px; overflow-wrap: anywhere; }
+  #agent-steps li.phase { border-top: 0; padding: 12px 0 2px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--quiet); }
+  #agent-steps li.phase:first-child { padding-top: 0; }
+  #agent-steps .tool { font: 12px ui-monospace, Menlo, monospace; color: var(--quiet); margin-right: 6px; }
+  #agent-steps .thought { color: var(--quiet); font-style: italic; }
+  #agent-steps .done { font-weight: 600; }
+  #agent-steps .opts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .heard { font-size: 13px; margin-top: 8px; min-height: 20px; color: var(--quiet); }
+
+  /* Vault */
+  #vault-list { list-style: none; margin: 0; padding: 0; }
+  #vault-list li { padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  #vault-list .icon { display: inline-block; width: 20px; color: var(--quiet); }
+  #vault-list .note { display: block; margin-top: 2px; font-size: 13px; color: var(--quiet); }
+  #vault-list .note.spotted { display: inline-block; margin-top: 4px; padding: 2px 6px; border-radius: 4px; background: var(--ask-bg); color: var(--ask); font-weight: 600; }
+
+  /* Money back */
+  #claim tr.sum td { font-weight: 600; }
 </style>
 </head>
 <body>
@@ -109,6 +131,14 @@
       <button data-g="swipe_down">Swipe down</button>
     </div>
     <div class="gesture-hint" id="hint"></div>
+    <div class="heard" id="heard" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>What Claude is doing</h2>
+    <div id="agent-status" aria-live="polite"></div>
+    <ol id="agent-steps"></ol>
+    <div class="label">Claude plans with tools. Code checks every spend and has the last word.</div>
   </section>
 
   <section>
@@ -130,12 +160,24 @@
   </section>
 
   <section>
+    <h2>Vault: the traveler's documents</h2>
+    <div id="trip"></div>
+    <ul id="vault-list"></ul>
+  </section>
+
+  <section>
     <h2>Mandate ledger</h2>
     <div id="left"></div>
     <table id="ledger"></table>
     <h3>Consent records</h3>
     <ul id="consents"></ul>
     <div class="label" id="mandate"></div>
+  </section>
+
+  <section>
+    <h2>Money back</h2>
+    <div id="claim"></div>
+    <div class="label">Every dollar is checked in code (<code>engine/app/claims.py</code>). Submitting is simulated: Visa has no public claims API.</div>
   </section>
 
   <section class="span2">
@@ -167,7 +209,10 @@ const usd = (n) => (n == null || isNaN(n) ? '' : `$${Number(n).toLocaleString('e
 const time = (ts) => (ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '');
 const chip = (cls, text) => `<span class="chip ${cls}">${esc(text)}</span>`;
 const VIA = { glasses: 'the glasses', asi1: 'ASI:One', api: 'the API' };
-const LEDGER_EVENTS = ['state.snapshot', 'payment.executed', 'mandate.checked', 'offer.declined', 'approval.granted', 'approval.rejected', 'call.completed', 'demo.reset'];
+const LEDGER_EVENTS = ['state.snapshot', 'payment.executed', 'mandate.checked', 'offer.declined', 'approval.granted', 'approval.rejected', 'call.completed', 'demo.reset', 'mandate.set', 'claim.submitted'];
+const sigChip = (sig) => (sig && sig.verified
+  ? `<span class="chip good" title="${esc(`${sig.alg || 'ed25519'} · key ${sig.keyid || ''}`)}">✓ signed</span>`
+  : chip('bad', '✕ not verified'));
 
 // "21:15" -> "9:15 PM"
 function clock(t) {
@@ -193,16 +238,24 @@ function renderScreen(s) {
 
 let taskId = null;
 let callMode = '';
-let trace, call, nudgeTimer;
+let trace, call, nudgeTimer, agent;
+let claim = null, vaultItems = [], trip = null, spotted = false, cancelledFlight = null;
 
 function resetPanels() {
   trace = { cancelled: null, declined: null, options: [], checks: [] };
   call = { steps: [], started: false, waiting: false, outcome: null, transcript: null, verified: false };
+  agent = { steps: [], status: null, failedPhase: null };
+  claim = null;
+  spotted = false;
+  cancelledFlight = null;
   clearTimeout(nudgeTimer);
   $('play').classList.remove('nudge');
   $('rec-hint').textContent = 'Fallback if the live call fails: a call recorded earlier.';
   renderTrace();
   renderCall();
+  renderAgent();
+  renderVault();
+  renderClaim();
 }
 
 function callStep(e, text) {
@@ -228,8 +281,21 @@ function handle(e) {
       call.waiting = d.stage === 'fee';
       if (d.outcome) { call.outcome = d.outcome; call.verified = !!d.outcome.verified; }
       if (d.outcome && d.outcome.error) nudge("The live call didn't start. Play the recorded call.");
+      if (Array.isArray(d.agent)) agent.steps = d.agent.map((s) => ({ ...s }));
+      if (agent.steps.length && !agent.status) agent.status = 'live';
+      vaultItems = d.vault || vaultItems;
+      trip = d.trip || trip;
+      claim = d.claim || null;
+      // A reload mid-demo: rebuild what live events would have shown.
+      if (d.task_id && d.stage !== 'ready') {
+        cancelledFlight = cancelledFlight || (d.trip && d.trip.flight) || null;
+        spotted = spotted || ['calling', 'fee', 'resolved'].includes(d.stage) || vaultItems.some((v) => v.type === 'call_transcript');
+      }
       renderTrace();
       renderCall();
+      renderAgent();
+      renderVault();
+      renderClaim();
       break;
     case 'hud.screen':
       renderScreen(d);
@@ -238,7 +304,9 @@ function handle(e) {
       if (e.task_id !== taskId) resetPanels();
       taskId = e.task_id;
       trace.cancelled = d;
+      cancelledFlight = d.flight;
       renderTrace();
+      renderVault();
       break;
     case 'options.ranked':
       trace.options = d.options || [];
@@ -282,6 +350,54 @@ function handle(e) {
       break;
     case 'cutoff.detected':
       callStep(e, `Spotted: ${d.place} desk closes ${clock(d.closes_at)}; you land ${clock(d.arrival)} and get there around ${clock(d.eta)}`);
+      spotted = true;
+      renderVault();
+      break;
+    case 'agent.step':
+    case 'agent.done':
+      if (agent.status !== 'failed') agent.status = 'live';
+      agentStep(e.type === 'agent.done' ? { phase: d.phase, kind: 'done', text: d.text, ts: e.ts } : { ...d, ts: e.ts });
+      break;
+    case 'agent.failed':
+      agent.status = 'failed';
+      agent.failedPhase = d.phase;
+      agentStep({ phase: d.phase, kind: 'failed', text: d.error, ts: e.ts });
+      break;
+    case 'agent.answer':
+      agentStep({ phase: 'ask', kind: 'answer', question: d.question, text: d.answer, ts: e.ts });
+      break;
+    case 'budget.proposed':
+      if (d.proposed_by !== 'agent') { // Claude's own proposal already shows as its propose_limit step
+        if (!agent.status) agent.status = 'scripted';
+        agentStep({ phase: 'plan', kind: 'limit', amount: d.limit_usd, text: d.reason, ts: e.ts });
+      }
+      break;
+    case 'mandate.set':
+      agentStep({ phase: 'plan', kind: 'consent', text: `The traveler accepted the ${usd(d.budget_usd)} limit on ${VIA[d.via] || d.via}`, ts: e.ts });
+      break;
+    case 'mandate.declined':
+      agentStep({ phase: 'plan', kind: 'consent', bad: true, text: 'The traveler said no to the limit. Nothing was spent.', ts: e.ts });
+      break;
+    case 'flight.booked':
+      agentStep({ phase: 'plan', kind: 'event', text: `Booked ${d.airline} ${d.flight}${d.pnr ? ` · PNR ${d.pnr} (${d.source})` : ''}`, ts: e.ts });
+      break;
+    case 'claim.ready':
+      claim = { ...(claim || {}), ...d, status: 'ready' };
+      renderClaim();
+      break;
+    case 'claim.submitted':
+      claim = { ...(claim || {}), status: 'submitted', submitted_via: d.via };
+      renderClaim();
+      break;
+    case 'vault.updated':
+      refreshState();
+      break;
+    case 'trip.updated':
+      trip = { ...(trip || {}), ...d, live: true };
+      renderVault();
+      break;
+    case 'voice.heard':
+      $('heard').textContent = d.transcript ? `Heard: "${d.transcript}"${d.intent ? ` → ${d.intent}` : ''}` : '';
       break;
     case 'call.started':
       call.started = true;
@@ -306,6 +422,8 @@ function handle(e) {
       taskId = null;
       resetPanels();
       $('feed').innerHTML = '';
+      $('heard').textContent = '';
+      refreshState();
       break;
   }
   addFeed(e);
@@ -411,17 +529,160 @@ async function refreshLedger() {
   try { l = await (await fetch(API + '/ledger')).json(); } catch { return; }
   const row = (k, v, cls = '') => `<tr class="${cls}"><td>${k}</td><td class="num">${esc(v)}</td></tr>`;
   $('left').innerHTML = `<span class="big">${esc(usd(l.remaining_usd))}</span> <span class="quiet">left of ${esc(usd(l.mandate.budget_usd))}</span>`;
+  const claims = l.claims || [];
   $('ledger').innerHTML =
     row('Budget', usd(l.mandate.budget_usd)) +
-    l.spends.map((s) => row(`${esc(s.merchant)} <span class="quiet">${esc(s.kind)}</span>`, usd(s.amount))).join('') +
+    l.spends.map((s) => row(`${esc(s.merchant)} <span class="quiet">${esc(s.kind)}</span> ${sigChip(s.signature)}`, usd(s.amount))).join('') +
     l.refunds.map((r) => row(`${esc(r.airline)} refund <span class="quiet">${esc(r.status)}</span>`, `−${usd(r.amount)}`)).join('') +
     row('Spent', usd(l.spent_usd), 'sum') +
     row('Net cost after refunds', usd(l.net_cost_usd), 'sum') +
+    claims.map((c) => row(`Card benefits claim <span class="quiet">${esc(c.status)}</span>`, `−${usd(c.total_usd)}`)).join('') +
+    (claims.length ? row('Net cost after the claim', usd(l.net_after_claims_usd), 'sum') : '') +
     l.denied.map((d) => row(`${chip('bad', '✕ Denied')} ${esc(d.merchant)} <span class="quiet">${esc(d.reason)}</span>`, usd(d.amount))).join('');
   $('consents').innerHTML = l.consents.map((c) =>
     `<li>${c.approved ? chip('good', '✓ OK') : chip('bad', '✕ No')} ${esc(usd(c.amount))} ${esc(c.merchant)} <span class="quiet">on ${esc(VIA[c.gesture] || c.gesture)} · ${esc(time(c.ts))}</span></li>`
   ).join('') || '<li class="quiet">None yet.</li>';
   $('mandate').textContent = `"${l.mandate.instruction}" · Agent token ${l.mandate.token_id} · ${l.mandate.label}`;
+}
+
+// ---------- Claude ----------
+
+const PHASE = { plan: 'Planning the rebooking', arrival: 'Checking the arrival', claim: 'Claiming money back', ask: 'Answering a question' };
+
+function optChip(o) {
+  const text = `${o.airline} ${o.price_usd === 0 ? 'free' : usd(o.price_usd)}`;
+  if (o.verdict === 'rejected') return chip('bad', `✕ ${text}`);
+  if (o.verdict === 'pick') return chip('good', `✓ ${text}`);
+  return chip('neutral', text);
+}
+
+// One readable line per tool call. Unknown tools fall back to their input.
+function toolSummary(s) {
+  const i = s.input || {};
+  const r = s.result || {};
+  if (r.error) return esc(r.error);
+  switch (s.tool) {
+    case 'check_flight_status': {
+      const o = r.airline_rebooking;
+      return esc(`${r.flight || i.flight}: ${r.status || 'unknown'}`) + (o ? esc(` · ${o.airline} offers ${o.flight} at ${clock(o.departs)} ${o.day || ''}`) : '');
+    }
+    case 'search_flights': {
+      const opts = r.options || [];
+      const rejected = opts.filter((o) => o.verdict === 'rejected').length;
+      return esc(`${i.origin}→${i.destination}: ${opts.length} flights, ${rejected} rejected by policy`) +
+        (r.source ? ` <span class="quiet small">(${esc(r.source)})</span>` : '') +
+        `<div class="opts">${opts.map(optChip).join('')}</div>`;
+    }
+    case 'read_vault':
+      return esc(`Read ${(r.items || []).length} documents: ${(r.items || []).map((x) => x.title).join(', ')}`);
+    case 'choose_flight':
+      return r.refused ? `${chip('bad', '✕ Refused by code')} ${esc(r.refused)}` : esc(`Chose ${r.chosen}${i.reason ? `: ${i.reason}` : ''}`);
+    case 'propose_limit':
+      return esc(`Proposed a ${usd(r.proposed ?? i.amount_usd)} limit${i.reason ? `: ${i.reason}` : ''}`);
+    case 'check_arrival':
+      return esc(`${r.flight} lands ${clock(r.lands)}, reaches ${r.lodging} around ${clock(r.eta_at_lodging)}; the desk closes ${clock(r.desk_closes)}`) +
+        (r.arrives_after_desk_closes ? ` ${chip('ask', 'After the desk closes')}` : '');
+    case 'call_lodging':
+      return esc(`Calling the guesthouse${i.reason ? `: ${i.reason}` : ''}`);
+    case 'read_ledger':
+      return esc(`Read ${(r.spends || []).length} signed payments and ${(r.refunds || []).length} refunds`);
+    case 'file_claim':
+      return r.refused ? `${chip('bad', '✕ Refused by code')} ${esc([].concat(r.refused).join('; '))}` : esc(`Filed a claim for ${usd(r.claim_ready)}`);
+    default:
+      return esc(JSON.stringify(i).slice(0, 160));
+  }
+}
+
+function stepHtml(s) {
+  switch (s.kind) {
+    case 'thought': return `<span class="thought">${esc(s.text)}</span>`;
+    case 'done': return `<span class="done">✓ ${esc(s.text)}</span>`;
+    case 'failed': return `${chip('bad', '✕ Failed')} ${esc(s.text)}`;
+    case 'answer': return `<strong>Q:</strong> ${esc(s.question)}<br><strong>A:</strong> ${esc(s.text)}`;
+    case 'tool': return `<span class="tool">${esc(s.tool)}</span>${toolSummary(s)}${s.error ? ` ${chip('bad', 'tool error')}` : ''}`;
+    case 'limit': return `${chip('neutral', 'Code')} Proposed a ${esc(usd(s.amount))} limit: ${esc(s.text)}`;
+    case 'consent': return `${s.bad ? chip('bad', '✕ No') : chip('good', '✓ OK')} ${esc(s.text)}`;
+    default: return esc(s.text || '');
+  }
+}
+
+function renderAgent() {
+  let status;
+  if (agent.status === 'failed' && agent.failedPhase === 'ask') status = chip('bad', "✕ Claude couldn't answer the question");
+  else if (agent.status === 'failed') status = chip('bad', `✕ Claude failed while ${(PHASE[agent.failedPhase] || agent.failedPhase || 'working').toLowerCase()}. The scripted flow took over`);
+  else if (agent.status === 'scripted') status = chip('ask', 'Scripted: Claude is off or unavailable');
+  else if (agent.status === 'live') status = chip('good', '● Claude is live');
+  else status = '<span class="quiet">Waiting. Claude starts planning when the flight is cancelled.</span>';
+  $('agent-status').innerHTML = status;
+  let phase = null;
+  $('agent-steps').innerHTML = agent.steps.map((s) => {
+    const head = s.phase !== phase ? `<li class="phase">${esc(PHASE[s.phase] || s.phase)}</li>` : '';
+    phase = s.phase;
+    return `${head}<li><span class="t">${esc(time(s.ts))}</span>${stepHtml(s)}</li>`;
+  }).join('');
+  $('agent-steps').scrollTop = $('agent-steps').scrollHeight;
+}
+
+function agentStep(s) {
+  agent.steps.push(s);
+  renderAgent();
+}
+
+// ---------- vault ----------
+
+const VAULT_ICON = { boarding_pass: '✈', lodging_confirmation: '⌂', travel_benefits: '★', call_transcript: '☎', trip_claim: '$' };
+
+async function refreshState() {
+  let s;
+  try { s = await (await fetch(API + '/state', { cache: 'no-store' })).json(); } catch { return; }
+  vaultItems = s.vault || [];
+  trip = s.trip || trip;
+  claim = s.claim || null;
+  renderVault();
+  renderClaim();
+}
+
+function renderVault() {
+  const t = trip;
+  $('trip').innerHTML = t && t.live
+    ? `<p class="small">${chip('good', 'Live')} ${esc(`${t.airline || ''} ${t.flight} ${t.route || `${t.from}-${t.to}`}`)} <span class="quiet">· the traveler's real flight, from FlightAware</span></p>`
+    : '';
+  const cancelled = cancelledFlight;
+  $('vault-list').innerHTML = vaultItems.map((v) => {
+    const d = v.data || {};
+    const lodging = v.type === 'lodging_confirmation';
+    let detail = '';
+    if (d.note) detail = `<span class="note${lodging && spotted ? ' spotted' : ''}">${esc(d.note)}${lodging && spotted ? ' · Standby spotted this' : ''}</span>`;
+    else if (v.type === 'boarding_pass' && d.departs) {
+      detail = `<span class="note">${esc([`departs ${clock(d.departs)}`, d.arrives && `lands ${clock(d.arrives)}`, d.price_usd != null && usd(d.price_usd)].filter(Boolean).join(' · '))}</span>`;
+    }
+    const tag = v.source === 'agent' ? chip('good', 'Saved by Standby') : chip('neutral', 'From the traveler');
+    const gone = cancelled && d.flight === cancelled ? ` ${chip('bad', 'Cancelled')}` : '';
+    return `<li><span class="icon">${esc(VAULT_ICON[v.type] || '•')}</span><strong>${esc(v.title)}</strong> ${tag}${gone}${detail}</li>`;
+  }).join('') || '<li class="quiet">No documents.</li>';
+}
+
+// ---------- money back ----------
+
+function renderClaim() {
+  const c = claim;
+  if (!c) {
+    $('claim').innerHTML = "<p class=\"quiet\">No claim yet. Once the trip is handled, Standby claims back what the card's travel benefits cover.</p>";
+    return;
+  }
+  const status = c.status === 'submitted'
+    ? chip('good', `✓ Submitted on ${VIA[c.submitted_via] || c.submitted_via || 'the glasses'}`)
+    : chip('ask', "? Waiting for the wearer's tap");
+  const by = c.drafted_by === 'agent' ? chip('good', 'Drafted by Claude') : chip('neutral', 'Drafted by code');
+  const rows = (c.items || []).map((i) => {
+    const rc = i.receipt;
+    const receipt = rc ? `${esc(rc.merchant)} ${esc(usd(rc.amount_usd))} ${rc.signature_verified ? chip('good', '✓ signed') : chip('bad', '✕ unsigned')}` : esc(i.reference || '');
+    return `<tr><td>${esc(i.benefit)}<div class="quiet small">${receipt}</div><div class="quiet small">${esc(i.rule || i.reason || '')}</div></td><td class="num">${esc(usd(i.amount_usd))}</td></tr>`;
+  }).join('');
+  $('claim').innerHTML = `<div><span class="big">${esc(usd(c.total_usd))}</span> <span class="quiet">back expected</span></div>
+    <p>${status} ${by}</p>
+    <table>${rows}<tr class="sum"><td>Total claimed</td><td class="num">${esc(usd(c.total_usd))}</td></tr></table>
+    ${c.label ? `<div class="label">${esc(c.label)}</div>` : ''}`;
 }
 
 // ---------- tests ----------
@@ -456,6 +717,7 @@ function summary(e) {
     case 'payment.executed': return `${usd(d.amount)} to ${d.merchant} · token ${d.token_id} · ${d.reference}`;
     case 'hud.screen': return (d.lines || []).join(' / ') || '(blank)';
     case 'call.completed': return JSON.stringify(d.outcome);
+    case 'agent.step': return d.kind === 'tool' ? `${d.phase} · ${d.tool}${d.error ? ' (error)' : ''}` : `${d.phase} · ${String(d.text || '').slice(0, 160)}`;
     default: return Object.keys(d).length ? JSON.stringify(d) : '';
   }
 }
